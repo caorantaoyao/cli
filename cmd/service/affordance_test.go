@@ -5,6 +5,9 @@ package service
 
 import (
 	"encoding/json"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -264,6 +267,201 @@ func TestPrepareShortcutHelp_PreservesPostMountLong(t *testing.T) {
 	}
 }
 
+func TestPrepareShortcutHelp_SlidesReferenceRouteWithoutAffordance(t *testing.T) {
+	sc := &cobra.Command{Use: "+xml-get", Short: "Fetch presentation XML"}
+	cmdmeta.SetSource(sc, cmdmeta.SourceShortcut, false)
+	cmdmeta.SetDomain(sc, "slides")
+	cmdmeta.SetAffordanceRef(sc, "slides", "+xml-get")
+	cmdutil.SetRisk(sc, "read")
+
+	skillFS := fstest.MapFS{
+		"lark-slides/references/lark-slides-xml-presentations-get.md": {
+			Data: []byte("# slides +xml-get\n\nRead the presentation XML."),
+		},
+	}
+	if !PrepareShortcutHelp(sc, skillFS) {
+		t.Fatal("PrepareShortcutHelp returned false for a Slides shortcut with a reference route")
+	}
+	for _, want := range []string{
+		"Fetch presentation XML",
+		"Risk: read",
+		"Slides document routes:",
+		"lark-cli skills read lark-slides references/lark-slides-xml-presentations-get.md",
+	} {
+		if !strings.Contains(sc.Long, want) {
+			t.Errorf("Slides shortcut help missing %q:\n%s", want, sc.Long)
+		}
+	}
+	if strings.Contains(sc.Long, "Read the presentation XML.") {
+		t.Fatalf("Slides shortcut help must route to the reference, not inline it:\n%s", sc.Long)
+	}
+	PrepareShortcutHelp(sc, skillFS)
+	if got := strings.Count(sc.Long, "Slides document routes:"); got != 1 {
+		t.Fatalf("document routes appended %d times after re-render, want 1:\n%s", got, sc.Long)
+	}
+}
+
+func TestSlidesShortcutReferenceMapping(t *testing.T) {
+	want := map[string][]string{
+		"+create": {
+			"lark-cli skills read lark-slides references/lark-slides-create.md",
+		},
+		"+add-slide": {
+			"lark-cli skills read lark-slides references/lark-slides-add-slide.md",
+		},
+		"+delete-slide": {
+			"lark-cli skills read lark-slides references/lark-slides-delete-slide.md",
+		},
+		"+xml-get": {
+			"lark-cli skills read lark-slides references/lark-slides-xml-presentations-get.md",
+		},
+		"+screenshot": {
+			"lark-cli skills read lark-slides references/lark-slides-screenshot.md",
+		},
+		"+media-upload": {
+			"lark-cli skills read lark-slides references/lark-slides-media-upload.md",
+		},
+		"+replace-slide": {
+			"lark-cli skills read lark-slides references/lark-slides-replace-slide.md",
+			"lark-cli skills read lark-slides references/lark-slides-edit-workflows.md",
+			"lark-cli skills read lark-slides references/xml-schema-quick-ref.md",
+		},
+		"+update-slide": {
+			"lark-cli skills read lark-slides references/lark-slides-update-slide.md",
+			"lark-cli skills read lark-slides references/lark-slides-edit-workflows.md",
+			"lark-cli skills read lark-slides references/xml-schema-quick-ref.md",
+		},
+		"+update": {
+			"lark-cli skills read lark-slides references/lark-slides-update-slide.md",
+			"lark-cli skills read lark-slides references/lark-slides-edit-workflows.md",
+			"lark-cli skills read lark-slides references/xml-schema-quick-ref.md",
+		},
+		"+replace-pages": {
+			"lark-cli skills read lark-slides references/lark-slides-update-slide.md",
+			"lark-cli skills read lark-slides references/lark-slides-edit-workflows.md",
+			"lark-cli skills read lark-slides references/xml-schema-quick-ref.md",
+		},
+		"+history-list": {
+			"lark-cli skills read lark-slides references/lark-slides-history.md",
+		},
+		"+history-revert": {
+			"lark-cli skills read lark-slides references/lark-slides-history.md",
+		},
+		"+history-revert-status": {
+			"lark-cli skills read lark-slides references/lark-slides-history.md",
+		},
+	}
+
+	for command, routes := range want {
+		t.Run(command, func(t *testing.T) {
+			sc := &cobra.Command{Use: command, Short: command}
+			cmdmeta.SetSource(sc, cmdmeta.SourceShortcut, false)
+			cmdmeta.SetDomain(sc, "slides")
+			skillFS := fstest.MapFS{}
+			for _, path := range slidesShortcutReferencePaths[command] {
+				skillFS[path] = &fstest.MapFile{Data: []byte("reference content")}
+			}
+			got, ok := readSlidesShortcutReferenceRoutes(sc, skillFS)
+			if !ok || len(got) == 0 {
+				t.Fatalf("shortcut %q has no mapped reference", command)
+			}
+			for _, route := range routes {
+				if !containsString(got, route) {
+					t.Fatalf("shortcut %q routes = %#v, want %q", command, got, route)
+				}
+			}
+		})
+	}
+}
+
+// TestSlidesShortcutReferencePathsResolve pins the invariant that every mapped
+// reference path exists on disk: slidesDocumentRoutes silently drops missing
+// paths, so a phantom entry (e.g. the removed lark-slides-replace-pages.md)
+// would emit an unreadable route or none at all without this guard.
+func TestSlidesShortcutReferencePathsResolve(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	skillsRoot := os.DirFS(filepath.Join(repoRoot, "skills"))
+	for command, paths := range slidesShortcutReferencePaths {
+		for _, path := range paths {
+			if _, err := fs.Stat(skillsRoot, path); err != nil {
+				t.Errorf("shortcut %q references missing file %q: %v", command, path, err)
+			}
+		}
+	}
+}
+
+// TestSlidesReplacePagesRoutesToReplacement locks the deprecation contract:
+// +replace-pages must never reference the nonexistent replace-pages doc and
+// must route to its live replacement (+update-slide) plus emit the deprecation
+// hint when rendered as help.
+func TestSlidesReplacePagesRoutesToReplacement(t *testing.T) {
+	for _, path := range slidesShortcutReferencePaths["+replace-pages"] {
+		if strings.Contains(path, "lark-slides-replace-pages.md") {
+			t.Fatalf("+replace-pages must not reference the removed replace-pages doc: %q", path)
+		}
+	}
+
+	sc := &cobra.Command{Use: "+replace-pages", Short: "Deprecated page replace"}
+	cmdmeta.SetSource(sc, cmdmeta.SourceShortcut, false)
+	cmdmeta.SetDomain(sc, "slides")
+	skillFS := fstest.MapFS{
+		"lark-slides/references/lark-slides-update-slide.md":   {Data: []byte("# update-slide")},
+		"lark-slides/references/lark-slides-edit-workflows.md": {Data: []byte("# edit workflows")},
+		slidesXMLQuickReferencePath:                            {Data: []byte("# XML quick ref")},
+	}
+	if !PrepareShortcutHelp(sc, skillFS) {
+		t.Fatal("PrepareShortcutHelp returned false for +replace-pages")
+	}
+	for _, want := range []string{
+		"lark-cli skills read lark-slides references/lark-slides-update-slide.md",
+		"Deprecated: use `lark-cli slides +update-slide` instead.",
+	} {
+		if !strings.Contains(sc.Long, want) {
+			t.Errorf("+replace-pages help missing %q:\n%s", want, sc.Long)
+		}
+	}
+	if strings.Contains(sc.Long, "lark-slides-replace-pages.md") {
+		t.Fatalf("+replace-pages help must not route to the removed doc:\n%s", sc.Long)
+	}
+}
+
+func TestSlidesScreenshotHelpDoesNotIncludeXMLQuickReference(t *testing.T) {
+	sc := &cobra.Command{Use: "+screenshot", Short: "Save screenshots"}
+	cmdmeta.SetSource(sc, cmdmeta.SourceShortcut, false)
+	cmdmeta.SetDomain(sc, "slides")
+	skillFS := fstest.MapFS{
+		"lark-slides/references/lark-slides-screenshot.md": {
+			Data: []byte("# slides +screenshot\n\nSave screenshots."),
+		},
+		slidesXMLQuickReferencePath: {
+			Data: []byte("# XML Schema Quick Reference"),
+		},
+	}
+
+	routes, ok := readSlidesShortcutReferenceRoutes(sc, skillFS)
+	if !ok {
+		t.Fatal("screenshot shortcut should have a primary reference")
+	}
+	if len(routes) != 1 {
+		t.Fatalf("screenshot reference count = %d, want 1: %#v", len(routes), routes)
+	}
+	if strings.Contains(routes[0], "xml-schema-quick-ref.md") {
+		t.Fatalf("screenshot help must not route to the XML quick reference:\n%s", routes[0])
+	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 // domainCmd wires a domain-tagged command with a subcommand under a root, the
 // shape PrepareDomainHelp expects.
 func domainCmd(short, long string) *cobra.Command {
@@ -304,5 +502,64 @@ func TestPrepareDomainHelp_FallsBackToShort(t *testing.T) {
 	}
 	if !strings.HasPrefix(dom.Long, "Message and group chat management") {
 		t.Errorf("Short should seed Long when no hand-authored Long exists; got:\n%s", dom.Long)
+	}
+}
+
+func TestPrepareDomainHelp_SlidesIncludesDocumentRoutes(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	dom := &cobra.Command{Use: "slides", Short: "Slides"}
+	cmdmeta.SetDomain(dom, "slides")
+	dom.AddCommand(&cobra.Command{Use: "+create", Short: "Create", Run: func(*cobra.Command, []string) {}})
+	root.AddCommand(dom)
+
+	const quickReference = `# XML Schema Quick Reference
+
+<presentation xmlns="http://www.larkoffice.com/sml/2.0" width="960" height="540">
+  <slide>
+    <data>
+      <shape type="text" topLeftX="80" topLeftY="80" width="800" height="120">
+        <content textType="title"><p>Title</p></content>
+      </shape>
+    </data>
+  </slide>
+</presentation>
+
+<table><colgroup><col/></colgroup><tr><td><content><p>A</p></content></td></tr></table>
+<chart><chartPlotArea/><chartData/></chart>`
+	skillFS := fstest.MapFS{
+		"lark-slides/SKILL.md":                           {Data: []byte("# slides")},
+		"lark-slides/references/xml-schema-quick-ref.md": {Data: []byte(quickReference)},
+	}
+
+	if !PrepareDomainHelp(dom, skillFS) {
+		t.Fatal("PrepareDomainHelp returned false for slides domain")
+	}
+	for _, want := range []string{
+		"Slides list routing:",
+		"There is no `list` subcommand",
+		"slides +xml-get --presentation <id_or_URL>",
+		"xml_presentation.slide get",
+		"Slides document routes:",
+		"lark-cli skills read lark-slides",
+		"lark-cli skills read lark-slides references/xml-schema-quick-ref.md",
+	} {
+		if !strings.Contains(dom.Long, want) {
+			t.Errorf("slides help missing document route %q:\n%s", want, dom.Long)
+		}
+	}
+	for _, unwanted := range []string{
+		"Embedded XML syntax quick reference:",
+		`<presentation xmlns="http://www.larkoffice.com/sml/2.0"`,
+		"<shape type=\"text\"",
+		"<table>",
+		"<chart>",
+	} {
+		if strings.Contains(dom.Long, unwanted) {
+			t.Errorf("slides help must not inline XML reference content %q:\n%s", unwanted, dom.Long)
+		}
+	}
+	PrepareDomainHelp(dom, skillFS)
+	if got := strings.Count(dom.Long, "Slides document routes:"); got != 1 {
+		t.Fatalf("slides document routes appended %d times after re-render, want 1:\n%s", got, dom.Long)
 	}
 }

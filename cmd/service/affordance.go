@@ -66,6 +66,7 @@ func PrepareDomainHelp(cmd *cobra.Command, skillFS fs.FS) bool {
 			fmt.Fprintf(&b, "\n\nDomain guide (concepts, command choice, conventions): lark-cli skills read %s", skill)
 		}
 	}
+	appendSlidesDomainRoutingHints(&b, cmd, skillFS)
 	cmd.Long = b.String()
 	return true
 }
@@ -115,6 +116,158 @@ const (
 	domainBaseAnnotation   = "affordance-domain-base"
 	shortcutBaseAnnotation = "affordance-shortcut-base"
 )
+
+const (
+	slidesSkillName             = "lark-slides"
+	slidesXMLQuickReferencePath = "lark-slides/references/xml-schema-quick-ref.md"
+)
+
+// slidesShortcutReferencePaths maps each Slides shortcut to its primary
+// command guide. XML-consuming edit shortcuts also route to the shared editing
+// workflow and schema references, but help only prints `skills read` routes
+// instead of inlining the reference bodies. Every path here must resolve to a
+// real file under skills/lark-slides/references — slidesDocumentRoutes skips
+// any missing path, so a phantom entry would silently drop the route.
+var slidesShortcutReferencePaths = map[string][]string{
+	"+create": {
+		"lark-slides/references/lark-slides-create.md",
+	},
+	"+add-slide": {
+		"lark-slides/references/lark-slides-add-slide.md",
+	},
+	"+delete-slide": {
+		"lark-slides/references/lark-slides-delete-slide.md",
+	},
+	"+xml-get": {
+		"lark-slides/references/lark-slides-xml-presentations-get.md",
+	},
+	"+screenshot": {
+		"lark-slides/references/lark-slides-screenshot.md",
+	},
+	"+media-upload": {
+		"lark-slides/references/lark-slides-media-upload.md",
+	},
+	"+replace-slide": {
+		"lark-slides/references/lark-slides-replace-slide.md",
+		"lark-slides/references/lark-slides-edit-workflows.md",
+		slidesXMLQuickReferencePath,
+	},
+	"+update-slide": {
+		"lark-slides/references/lark-slides-update-slide.md",
+		"lark-slides/references/lark-slides-edit-workflows.md",
+		slidesXMLQuickReferencePath,
+	},
+	// +update is the hidden alias of +update-slide; keep its help routes in sync.
+	"+update": {
+		"lark-slides/references/lark-slides-update-slide.md",
+		"lark-slides/references/lark-slides-edit-workflows.md",
+		slidesXMLQuickReferencePath,
+	},
+	// +replace-pages is deprecated in favor of +update-slide; there is no
+	// lark-slides-replace-pages.md, so route to the replacement's docs.
+	"+replace-pages": {
+		"lark-slides/references/lark-slides-update-slide.md",
+		"lark-slides/references/lark-slides-edit-workflows.md",
+		slidesXMLQuickReferencePath,
+	},
+	"+history-list": {
+		"lark-slides/references/lark-slides-history.md",
+	},
+	"+history-revert": {
+		"lark-slides/references/lark-slides-history.md",
+	},
+	"+history-revert-status": {
+		"lark-slides/references/lark-slides-history.md",
+	},
+}
+
+// slidesDeprecatedReplacements records the current replacement command for
+// deprecated Slides shortcuts so help can emit a stable pointer even when no
+// dedicated reference file exists for the deprecated name.
+var slidesDeprecatedReplacements = map[string]string{
+	"+replace-pages": "slides +update-slide",
+}
+
+func appendSlidesDomainRoutingHints(b *strings.Builder, cmd *cobra.Command, skillFS fs.FS) {
+	if cmd.Name() != "slides" {
+		return
+	}
+	b.WriteString("\n\nSlides list routing:")
+	b.WriteString("\n  There is no `list` subcommand for presentations or slides.")
+	b.WriteString("\n  To enumerate slide IDs, use `lark-cli slides +xml-get --presentation <id_or_URL> --output ./readback.xml --json` and parse the returned XML.")
+	b.WriteString("\n  For a known slide ID, use `lark-cli slides xml_presentation.slide get`.")
+
+	routes := slidesDocumentRoutes(skillFS, []string{
+		"lark-slides/SKILL.md",
+		slidesXMLQuickReferencePath,
+	})
+	if len(routes) == 0 {
+		return
+	}
+	b.WriteString("\n\nSlides document routes:")
+	for _, route := range routes {
+		fmt.Fprintf(b, "\n  %s", route)
+	}
+}
+
+func readSlidesShortcutReferenceRoutes(cmd *cobra.Command, skillFS fs.FS) ([]string, bool) {
+	if cmdmeta.Domain(cmd) != "slides" || skillFS == nil {
+		return nil, false
+	}
+	paths, ok := slidesShortcutReferencePaths[cmd.Name()]
+	if !ok {
+		return nil, false
+	}
+
+	routes := slidesDocumentRoutes(skillFS, paths)
+	return routes, len(routes) > 0
+}
+
+func slidesDocumentRoutes(skillFS fs.FS, paths []string) []string {
+	if skillFS == nil {
+		return nil
+	}
+	var routes []string
+	for _, path := range paths {
+		if _, err := fs.Stat(skillFS, path); err != nil {
+			continue
+		}
+		routes = append(routes, "lark-cli skills read "+slidesSkillReadPath(path))
+	}
+	return routes
+}
+
+func slidesSkillReadPath(path string) string {
+	if path == "lark-slides/SKILL.md" {
+		return slidesSkillName
+	}
+	return slidesSkillName + " " + strings.TrimPrefix(path, "lark-slides/")
+}
+
+func appendSlidesShortcutReferenceRoutes(b *strings.Builder, routes []string) {
+	if len(routes) == 0 {
+		return
+	}
+	b.WriteString("\n\nSlides document routes:")
+	for _, route := range routes {
+		b.WriteString("\n  ")
+		b.WriteString(route)
+	}
+}
+
+// appendSlidesDeprecationHint emits a stable "use <replacement> instead" line
+// for deprecated Slides shortcuts. It carries no file path, so it stays valid
+// even when the deprecated name has no dedicated reference.
+func appendSlidesDeprecationHint(b *strings.Builder, cmd *cobra.Command) {
+	if cmdmeta.Domain(cmd) != "slides" {
+		return
+	}
+	replacement, ok := slidesDeprecatedReplacements[cmd.Name()]
+	if !ok {
+		return
+	}
+	fmt.Fprintf(b, "\n\nDeprecated: use `lark-cli %s` instead.", replacement)
+}
 
 // setMethodHelpData records the coordinates PrepareMethodHelp needs (storing a
 // few strings is the only build-time cost; the overlay stays untouched).
@@ -171,11 +324,11 @@ func PrepareMethodHelp(cmd *cobra.Command, skillFS fs.FS) bool {
 }
 
 // PrepareShortcutHelp composes a +-prefixed shortcut's Long from its affordance
-// overlay — the same top layout as method help (description, Risk, guidance
-// block, related skills) minus the schema pointer, which shortcuts have none
-// of. Returns false when the command is not a shortcut or carries no overlay
-// entry, so shortcuts without guidance keep the default help plus the bottom
-// risk/tips append.
+// overlay and any embedded command references — the same top layout as method
+// help (description, Risk, guidance block, related skills) minus the schema
+// pointer, which shortcuts have none of. Returns false when the command is not
+// a shortcut, or when it has neither an overlay nor an embedded reference, so
+// ordinary shortcuts keep the default help plus the bottom risk/tips append.
 //
 // The lead is the command's pristine base (captureHelpBase): a shortcut that
 // set a hand-authored Long in PostMount (e.g. the docs shortcuts' "agents MUST
@@ -191,12 +344,17 @@ func PrepareShortcutHelp(cmd *cobra.Command, skillFS fs.FS) bool {
 	if src, _ := cmdmeta.SourceOf(cmd); src != cmdmeta.SourceShortcut {
 		return false
 	}
-	raw, ok := affordanceRaw(cmd)
-	if !ok {
-		return false
+	referenceRoutes, hasReferenceRoutes := readSlidesShortcutReferenceRoutes(cmd, skillFS)
+
+	var a meta.Affordance
+	hasAffordance := false
+	if raw, ok := affordanceRaw(cmd); ok {
+		if parsed, parsedOK := (meta.Method{Affordance: raw}).ParsedAffordance(); parsedOK {
+			a = parsed
+			hasAffordance = true
+		}
 	}
-	a, ok := (meta.Method{Affordance: raw}).ParsedAffordance()
-	if !ok {
+	if !hasAffordance && !hasReferenceRoutes {
 		return false
 	}
 	if len(a.Tips) == 0 {
@@ -211,6 +369,8 @@ func PrepareShortcutHelp(cmd *cobra.Command, skillFS fs.FS) bool {
 		b.WriteString(block)
 	}
 	writeRelatedSkills(&b, a.Skills, skillFS)
+	appendSlidesShortcutReferenceRoutes(&b, referenceRoutes)
+	appendSlidesDeprecationHint(&b, cmd)
 
 	cmd.Long = b.String()
 	return true
