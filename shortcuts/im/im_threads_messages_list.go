@@ -41,6 +41,9 @@ var ImThreadsMessagesList = common.Shortcut{
 		{Name: "no-reactions", Type: "bool", Desc: "skip auto-fetching reactions for each message (default: enrichment enabled)"},
 		downloadResourcesFlag,
 	}, common.PageAllFlags()...),
+	Tips: []string{
+		`Example: lark-cli im +threads-messages-list --thread <thread_id>`,
+	},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		threadFlag := runtime.Str("thread")
 		dir := runtime.Str("order")

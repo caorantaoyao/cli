@@ -91,6 +91,9 @@ var ImChatSearch = common.Shortcut{
 		{Name: "exclude-muted", Type: "bool", Desc: "(user identity only) drop chats the current user has muted (do-not-disturb); bot identity returns all chats unfiltered"},
 	}, common.PageAllFlags()...),
 	Normalize: normalizeChatSearchSortCompatibility,
+	Tips: []string{
+		`Example: lark-cli im +chat-search --query "project"`,
+	},
 	// DryRun previews the POST /open-apis/im/v2/chats/search request without executing.
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		body := buildSearchChatBody(runtime)

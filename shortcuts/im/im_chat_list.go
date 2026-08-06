@@ -62,6 +62,10 @@ var ImChatList = common.Shortcut{
 		{Name: "exclude-muted", Type: "bool", Desc: "(user identity only) drop chats the current user has muted (do-not-disturb); bot identity returns all chats unfiltered"},
 	}, common.PageAllFlags()...),
 	Normalize: normalizeChatListSortCompatibility,
+	Tips: []string{
+		`Example: lark-cli im +chat-list`,
+		`Example: lark-cli im +chat-list --sort active_time`,
+	},
 	// DryRun previews the GET /open-apis/im/v1/chats request without executing.
 	// When bot identity strips p2p from --types, emits the same stderr warning
 	// Execute would emit, so DryRun output truthfully reflects what the API
