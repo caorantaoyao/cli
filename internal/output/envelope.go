@@ -10,15 +10,21 @@ type Envelope struct {
 	DryRun             bool                   `json:"dry_run,omitempty"`
 	Data               interface{}            `json:"data,omitempty"`
 	Meta               *Meta                  `json:"meta,omitempty"`
+	Error              interface{}            `json:"error,omitempty"`
+	Hint               string                 `json:"hint,omitempty"`
 	ContentSafetyAlert interface{}            `json:"_content_safety_alert,omitempty"`
 	Notice             map[string]interface{} `json:"_notice,omitempty"`
 }
 
 // Meta carries optional metadata in envelope responses.
 type Meta struct {
-	Count      int             `json:"count,omitempty"`
-	Rollback   string          `json:"rollback,omitempty"`
-	Pagination *PaginationMeta `json:"pagination,omitempty"`
+	Count         int             `json:"count,omitempty"`
+	Rollback      string          `json:"rollback,omitempty"`
+	Pagination    *PaginationMeta `json:"pagination,omitempty"`
+	Complete      *bool           `json:"complete,omitempty"`
+	PagesFetched  int             `json:"pages_fetched,omitempty"`
+	StopReason    string          `json:"stop_reason,omitempty"`
+	NextPageToken string          `json:"next_page_token,omitempty"`
 }
 
 // PaginationMeta reports how a paginated read ended.

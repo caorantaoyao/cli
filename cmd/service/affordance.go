@@ -12,6 +12,7 @@ import (
 	"github.com/larksuite/cli/internal/affordance"
 	"github.com/larksuite/cli/internal/cmdmeta"
 	"github.com/larksuite/cli/internal/cmdutil"
+	"github.com/larksuite/cli/internal/imcontract"
 	"github.com/larksuite/cli/internal/meta"
 	"github.com/larksuite/cli/internal/skillref"
 	"github.com/spf13/cobra"
@@ -198,6 +199,7 @@ func prepareMethodHelp(
 		}
 	}
 
+	writeContractHelp(&b, cmd)
 	if canReferenceSchema == nil || canReferenceSchema() {
 		fmt.Fprintf(&b, "\n\nFull parameter schema:\n  lark-cli schema %s", schemaPath)
 	}
@@ -235,12 +237,16 @@ func PrepareShortcutHelpWithReferences(cmd *cobra.Command, skillFS fs.FS, refere
 	if src, _ := cmdmeta.SourceOf(cmd); src != cmdmeta.SourceShortcut {
 		return false
 	}
-	raw, ok := affordanceRaw(cmd)
-	if !ok {
-		return false
+	var a meta.Affordance
+	hasAffordance := false
+	if raw, ok := affordanceRaw(cmd); ok {
+		if parsed, parsedOK := (meta.Method{Affordance: raw}).ParsedAffordance(); parsedOK {
+			a = parsed
+			hasAffordance = true
+		}
 	}
-	a, ok := (meta.Method{Affordance: raw}).ParsedAffordance()
-	if !ok {
+	contractHelp := imcontract.HelpText(cmd)
+	if !hasAffordance && contractHelp == "" {
 		return false
 	}
 	if len(a.Tips) == 0 {
@@ -254,10 +260,21 @@ func PrepareShortcutHelpWithReferences(cmd *cobra.Command, skillFS fs.FS, refere
 		b.WriteString("\n\n")
 		b.WriteString(block)
 	}
+	if contractHelp != "" {
+		b.WriteString("\n\n")
+		b.WriteString(contractHelp)
+	}
 	writeRelatedSkills(&b, a.Skills, skillFS, references)
 
 	cmd.Long = b.String()
 	return true
+}
+
+func writeContractHelp(b *strings.Builder, cmd *cobra.Command) {
+	if text := imcontract.HelpText(cmd); text != "" {
+		b.WriteString("\n\n")
+		b.WriteString(text)
+	}
 }
 
 // writeRisk appends the "Risk: <level>" line, warning agents not to self-approve

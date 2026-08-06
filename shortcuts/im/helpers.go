@@ -23,6 +23,7 @@ import (
 	"github.com/larksuite/cli/extension/fileio"
 	"github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/credential"
+	"github.com/larksuite/cli/internal/imcontract"
 	"github.com/larksuite/cli/internal/recovery"
 	"github.com/larksuite/cli/internal/validate"
 	"github.com/larksuite/cli/shortcuts/common"
@@ -30,7 +31,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// normalizeAtMentions fixes common AI mistakes in @mention tags.
+// Kept until structured mention flags replace legacy inline-tag handling.
 var mentionFixRe = regexp.MustCompile(`<at\s+(id|open_id|user_id)=("?)([^"\s/>]+)"?\s*/?>`)
 var threadIDRe = regexp.MustCompile(`^omt_`)
 var messageIDRe = regexp.MustCompile(`^om_`)
@@ -334,10 +335,19 @@ func resolveOneMedia(ctx context.Context, runtime *common.RuntimeContext, s medi
 		return s.value, nil
 	}
 
+	var (
+		key string
+		err error
+	)
 	if isURL(s.value) {
-		return resolveURLMedia(ctx, runtime, s)
+		key, err = resolveURLMedia(ctx, runtime, s)
+	} else {
+		key, err = resolveLocalMedia(ctx, runtime, s)
 	}
-	return resolveLocalMedia(ctx, runtime, s)
+	if err == nil {
+		runtime.RecordContractFact(imcontract.Fact{Kind: imcontract.FactMediaPreuploadPerformed})
+	}
+	return key, err
 }
 
 // resolveURLMedia downloads a URL and uploads it.
@@ -856,16 +866,12 @@ func readMp4Duration(f fileio.File, fileSize int64) int64 {
 //
 // Steps:
 //  1. Extract code blocks with placeholders to protect them
-//  2. Downgrade headings: H1 → H4, H2~H6 → H5 (only when H1~H3 present)
-//  3. Normalize spacing between consecutive headings and tables with blank lines
-//  4. Restore code blocks
-//  5. Compress excess blank lines
-//  6. Strip invalid image references (keep only img_xxx keys)
+//  2. Normalize spacing between consecutive H1-H6 headings and tables with blank lines
+//  3. Restore code blocks
+//  4. Compress excess blank lines
+//  5. Strip invalid image references (keep only img_xxx keys)
 var (
-	reH2toH6     = regexp.MustCompile(`(?m)^#{2,6} (.+)$`)
-	reH1         = regexp.MustCompile(`(?m)^# (.+)$`)
-	reHasH1toH3  = regexp.MustCompile(`(?m)^#{1,3} `)
-	reConsecH    = regexp.MustCompile(`(?m)^(#{4,5} .+)\n{1,2}(#{4,5} )`)
+	reConsecH    = regexp.MustCompile(`(?m)^(#{1,6} .+)\n(#{1,6} )`)
 	reTableNoGap = regexp.MustCompile(`(?m)^([^|\n].*)\n(\|.+\|)`)
 	reTableAfter = regexp.MustCompile(`(?m)((?:^\|.+\|[^\S\n]*\n?)+)`)
 	reExcessNL   = regexp.MustCompile(`\n{3,}`)
@@ -882,13 +888,13 @@ func optimizeMarkdownStyle(text string) string {
 		return fmt.Sprintf("%s%d___", mark, idx)
 	})
 
-	// Only downgrade when original text has H1~H3; order matters (H2~H6 first).
-	if reHasH1toH3.MatchString(text) {
-		r = reH2toH6.ReplaceAllString(r, "##### $1")
-		r = reH1.ReplaceAllString(r, "#### $1")
+	for {
+		spaced := reConsecH.ReplaceAllString(r, "$1\n\n$2")
+		if spaced == r {
+			break
+		}
+		r = spaced
 	}
-
-	r = reConsecH.ReplaceAllString(r, "$1\n\n$2")
 
 	r = reTableNoGap.ReplaceAllString(r, "$1\n\n$2")
 	r = reTableAfter.ReplaceAllString(r, "$1\n")
@@ -994,6 +1000,7 @@ func resolveMarkdownImageURLs(ctx context.Context, runtime *common.RuntimeContex
 			resolveErr = markdownImageError(imgURL, "upload", err)
 			return m
 		}
+		runtime.RecordContractFact(imcontract.Fact{Kind: imcontract.FactMediaPreuploadPerformed})
 
 		// Reconstruct ![alt](img_xxx)
 		altStart := strings.Index(m, "[")
@@ -1578,6 +1585,17 @@ func buildShortcutItems(ids []string) []shortcutItem {
 		items = append(items, shortcutItem{FeedCardID: id, Type: int(ShortcutTypeChat)})
 	}
 	return items
+}
+
+func shortcutItemsBody(items []shortcutItem) []any {
+	body := make([]any, 0, len(items))
+	for _, item := range items {
+		body = append(body, map[string]any{
+			"feed_card_id": item.FeedCardID,
+			"type":         item.Type,
+		})
+	}
+	return body
 }
 
 // shortcutFailedReasonString converts the numeric failed-reason enum returned
