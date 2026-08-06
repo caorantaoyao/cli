@@ -9,11 +9,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/larksuite/cli/errs"
+	"github.com/larksuite/cli/internal/affordance"
+	"github.com/larksuite/cli/internal/meta"
 	"github.com/larksuite/cli/shortcuts/common"
 	"github.com/spf13/cobra"
 )
@@ -48,14 +51,18 @@ func TestMentionFlagsAreDeclaredOnSendAndReply(t *testing.T) {
 	}
 }
 
-func TestMentionTipsExposeShortestPath(t *testing.T) {
-	for _, shortcut := range []common.Shortcut{ImMessagesSend, ImMessagesReply} {
-		found := false
-		for _, tip := range shortcut.Tips {
-			found = found || strings.Contains(tip, "--mention")
+func TestMentionAffordanceExposesShortestPath(t *testing.T) {
+	affordance.SetSource(os.DirFS("../../affordance"))
+	t.Cleanup(func() { affordance.SetSource(nil) })
+
+	for _, command := range []string{"+messages-send", "+messages-reply"} {
+		raw, ok := affordance.For("im", command)
+		if !ok {
+			t.Fatalf("missing %s affordance", command)
 		}
-		if !found {
-			t.Fatalf("%s tips do not include a structured mention example", shortcut.Command)
+		parsed, ok := (meta.Method{Affordance: raw}).ParsedAffordance()
+		if !ok || len(parsed.Examples) != 1 || !strings.Contains(parsed.Examples[0].Command, "--mention") {
+			t.Fatalf("%s affordance does not expose one structured mention example: %#v", command, parsed.Examples)
 		}
 	}
 }
@@ -160,6 +167,23 @@ func TestMentionStringSliceParsingDoesNotEchoUnsafeValue(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), marker) {
 		t.Fatalf("mention validation leaked unsafe value: %v", err)
+	}
+}
+
+func TestMentionHelpOmitsEmptySliceDefault(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().StringSlice("mention", nil, "mention target")
+	installMentionFlagParser(cmd)
+
+	flag := cmd.Flags().Lookup("mention")
+	if flag == nil {
+		t.Fatal("mention flag is missing")
+	}
+	if flag.DefValue != "" {
+		t.Fatalf("mention DefValue = %q, want empty so help omits the synthetic default", flag.DefValue)
+	}
+	if usage := cmd.Flags().FlagUsages(); strings.Contains(usage, "(default [])") {
+		t.Fatalf("mention help exposes an implementation default: %q", usage)
 	}
 }
 

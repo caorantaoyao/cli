@@ -55,17 +55,97 @@ func TestReadCompletenessMatrix(t *testing.T) {
 			if got.OK != tt.wantOK || got.ExitCode != tt.wantExit {
 				t.Fatalf("result OK/exit = %v/%d, want %v/%d", got.OK, got.ExitCode, tt.wantOK, tt.wantExit)
 			}
-			if got.Meta == nil || got.Meta.Complete == nil || *got.Meta.Complete != tt.wantDone {
+			if got.Meta == nil || got.Meta.Pagination == nil || got.Meta.Pagination.Complete != tt.wantDone {
 				t.Fatalf("complete = %#v, want %v", got.Meta, tt.wantDone)
 			}
-			if got.Meta.StopReason != string(tt.wantReason) {
-				t.Fatalf("stop reason = %q, want %q", got.Meta.StopReason, tt.wantReason)
+			readNotice, _ := got.Notice["im_read"].(map[string]interface{})
+			if readNotice["stop_reason"] != string(tt.wantReason) {
+				t.Fatalf("stop reason = %#v, want %q", readNotice["stop_reason"], tt.wantReason)
 			}
 			if (got.Error != nil) != tt.wantError {
 				t.Fatalf("error present = %v, want %v", got.Error != nil, tt.wantError)
 			}
 			if got.Hint != tt.wantHint {
 				t.Fatalf("hint = %q, want %q", got.Hint, tt.wantHint)
+			}
+		})
+	}
+}
+
+func TestIncompleteReadRemovesContradictoryPageFields(t *testing.T) {
+	contract := mustReadContract(t, "im +chat-list")
+	for _, stopReason := range []client.StopReason{
+		client.StopReasonStartPageToken,
+		client.StopReasonServerTruncation,
+	} {
+		t.Run(string(stopReason), func(t *testing.T) {
+			session, err := NewReadSession(contract, ReadOptions{FullRead: false})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.ObservePagination(client.PaginationStatus{
+				PagesFetched: 1,
+				StopReason:   stopReason,
+			})
+			input := map[string]any{
+				"items":           []any{"kept"},
+				"has_more":        false,
+				"page_token":      "",
+				"next_page_token": "",
+			}
+			result, err := session.Finalize(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := result.Data.(map[string]any)
+			for _, field := range []string{"has_more", "page_token", "next_page_token"} {
+				if _, exists := data[field]; exists {
+					t.Fatalf("incomplete result retained page-relative field %q: %#v", field, data)
+				}
+				if _, exists := input[field]; !exists {
+					t.Fatalf("Finalize mutated caller data while removing %q: %#v", field, input)
+				}
+			}
+			if result.Meta == nil || result.Meta.Pagination == nil || result.Meta.Pagination.Complete {
+				t.Fatalf("pagination = %#v, want canonical incomplete result", result.Meta)
+			}
+		})
+	}
+}
+
+func TestCanonicalReadDataPreservesCompatiblePageFields(t *testing.T) {
+	contract := mustReadContract(t, "im +chat-list")
+	for _, tt := range []struct {
+		name   string
+		status client.PaginationStatus
+		data   map[string]any
+	}{
+		{
+			name:   "incomplete with resume cursor",
+			status: client.PaginationStatus{PagesFetched: 1, HasMore: true, NextPageToken: "next", StopReason: client.StopReasonPageLimit},
+			data:   map[string]any{"items": []any{"kept"}, "has_more": true, "page_token": "next"},
+		},
+		{
+			name:   "exhausted from collection start",
+			status: client.PaginationStatus{PagesFetched: 1, StopReason: client.StopReasonExhausted},
+			data:   map[string]any{"items": []any{"kept"}, "has_more": false, "page_token": ""},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := NewReadSession(contract, ReadOptions{FullRead: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.ObservePagination(tt.status)
+			result, err := session.Finalize(tt.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := result.Data.(map[string]any)
+			for _, field := range []string{"has_more", "page_token"} {
+				if _, exists := data[field]; !exists {
+					t.Fatalf("compatible result removed %q: %#v", field, data)
+				}
 			}
 		})
 	}
@@ -180,11 +260,11 @@ func TestPagedReadNormalizesRateLimitToNonRetryable(t *testing.T) {
 func TestSearchMaterializationControlsFinalCompleteness(t *testing.T) {
 	contract := mustReadContract(t, "im +messages-search")
 	tests := []struct {
-		name         string
-		status       MaterializationStatus
-		wantOK       bool
-		wantComplete bool
-		wantHint     string
+		name                        string
+		status                      MaterializationStatus
+		wantOK                      bool
+		wantMaterializationComplete bool
+		wantHint                    string
 	}{
 		{
 			name: "complete",
@@ -192,9 +272,9 @@ func TestSearchMaterializationControlsFinalCompleteness(t *testing.T) {
 				RequestedIDs: []string{"om_a", "om_b"},
 				ResolvedIDs:  []string{"om_a", "om_b"},
 			},
-			wantOK:       true,
-			wantComplete: true,
-			wantHint:     "Results are ready to use. Use message_id/file_key directly; do not call messages-mget.",
+			wantOK:                      true,
+			wantMaterializationComplete: true,
+			wantHint:                    "Results are ready to use. Use message_id/file_key directly; do not call messages-mget.",
 		},
 		{
 			name: "missing details",
@@ -203,9 +283,9 @@ func TestSearchMaterializationControlsFinalCompleteness(t *testing.T) {
 				ResolvedIDs:       []string{"om_a"},
 				MissingMessageIDs: []string{"om_b"},
 			},
-			wantOK:       false,
-			wantComplete: false,
-			wantHint:     "The search is incomplete. Query only materialization.missing_message_ids with im +messages-mget.",
+			wantOK:                      false,
+			wantMaterializationComplete: false,
+			wantHint:                    "The search is incomplete. Query only materialization.missing_message_ids with im +messages-mget.",
 		},
 		{
 			name: "unresolved hit",
@@ -214,9 +294,9 @@ func TestSearchMaterializationControlsFinalCompleteness(t *testing.T) {
 				ResolvedIDs:        []string{"om_a"},
 				UnresolvedHitCount: 1,
 			},
-			wantOK:       false,
-			wantComplete: false,
-			wantHint:     "The search is incomplete and cannot be safely recovered by message ID. Narrow the query before retrying.",
+			wantOK:                      false,
+			wantMaterializationComplete: false,
+			wantHint:                    "The search is incomplete and cannot be safely recovered by message ID. Narrow the query before retrying.",
 		},
 	}
 	for _, tt := range tests {
@@ -231,9 +311,11 @@ func TestSearchMaterializationControlsFinalCompleteness(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.OK != tt.wantOK || result.Meta == nil || result.Meta.Complete == nil ||
-				*result.Meta.Complete != tt.wantComplete {
-				t.Fatalf("result = %#v, want OK/complete %v/%v", result, tt.wantOK, tt.wantComplete)
+			if result.OK != tt.wantOK || result.Meta == nil || result.Meta.Pagination == nil {
+				t.Fatalf("result = %#v, want OK %v with pagination metadata", result, tt.wantOK)
+			}
+			if !result.Meta.Pagination.Complete {
+				t.Fatalf("materialization must not overwrite exhausted pagination: %#v", result.Meta.Pagination)
 			}
 			if result.Hint != tt.wantHint {
 				t.Fatalf("hint = %q, want %q", result.Hint, tt.wantHint)
@@ -244,7 +326,7 @@ func TestSearchMaterializationControlsFinalCompleteness(t *testing.T) {
 				t.Fatalf("materialization ledger missing: %#v", data)
 			}
 			wantStatus := "partial"
-			if tt.wantComplete {
+			if tt.wantMaterializationComplete {
 				wantStatus = "complete"
 			}
 			if ledger["status"] != wantStatus {
@@ -331,7 +413,7 @@ func TestSearchEmptyResultAddsNonExistenceHint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Meta == nil || result.Meta.Complete == nil || !*result.Meta.Complete {
+	if result.Meta == nil || result.Meta.Pagination == nil || !result.Meta.Pagination.Complete {
 		t.Fatalf("expected exhausted result to be complete: %#v", result.Meta)
 	}
 	const wantHint = "The search was exhausted, but an empty search result does not prove that the resource does not exist."

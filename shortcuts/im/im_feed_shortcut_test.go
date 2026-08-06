@@ -1010,8 +1010,9 @@ func TestImFeedShortcutListJSONIncludesCompletenessEnvelope(t *testing.T) {
 		Data struct {
 			Shortcuts []map[string]any `json:"shortcuts"`
 		} `json:"data"`
-		Meta *output.Meta `json:"meta"`
-		Hint string       `json:"hint"`
+		Meta   *output.Meta           `json:"meta"`
+		Hint   string                 `json:"hint"`
+		Notice map[string]interface{} `json:"_notice"`
 	}
 	out := rt.Factory.IOStreams.Out.(*bytes.Buffer).Bytes()
 	if err := json.Unmarshal(out, &envelope); err != nil {
@@ -1021,9 +1022,10 @@ func TestImFeedShortcutListJSONIncludesCompletenessEnvelope(t *testing.T) {
 		envelope.Data.Shortcuts[0]["feed_card_id"] != "oc_json" {
 		t.Fatalf("envelope data = %#v, ok = %v", envelope.Data, envelope.OK)
 	}
-	if envelope.Meta == nil || envelope.Meta.Complete == nil || *envelope.Meta.Complete ||
-		envelope.Meta.PagesFetched != 1 || envelope.Meta.StopReason != "single_page" ||
-		envelope.Meta.NextPageToken != "next" {
+	readNotice, _ := envelope.Notice["im_read"].(map[string]interface{})
+	if envelope.Meta == nil || envelope.Meta.Pagination == nil || envelope.Meta.Pagination.Complete ||
+		envelope.Meta.Pagination.Pages != 1 || envelope.Meta.Pagination.NextToken != "next" ||
+		readNotice["stop_reason"] != "single_page" {
 		t.Fatalf("meta = %#v, want incomplete single_page", envelope.Meta)
 	}
 	if !strings.Contains(envelope.Hint, "Result is incomplete.") {

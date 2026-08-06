@@ -34,10 +34,6 @@ var ImFeedShortcutCreate = common.Shortcut{
 		{Name: "tail", Type: "bool",
 			Desc: "append at the bottom of the shortcut list; mutually exclusive with --head"},
 	},
-	Tips: []string{
-		`Example: lark-cli im +feed-shortcut-create --chat-id <chat_id> --as user`,
-		`Example: lark-cli im +feed-shortcut-create --chat-id <chat_id> --tail --as user`,
-	},
 	Validate: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		if _, err := collectChatIDs(runtime); err != nil {
 			return err

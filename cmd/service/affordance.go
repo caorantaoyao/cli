@@ -212,11 +212,11 @@ func prepareMethodHelp(
 }
 
 // PrepareShortcutHelp composes a +-prefixed shortcut's Long from its affordance
-// overlay — the same top layout as method help (description, Risk, guidance
-// block, related skills) minus the schema pointer, which shortcuts have none
-// of. Returns false when the command is not a shortcut or carries no overlay
-// entry, so shortcuts without guidance keep the default help plus the bottom
-// risk/tips append.
+// overlay and contract help. Risk and Tips are deliberately not rendered into
+// Long: the root help renderer appends them after Usage/Flags for every
+// shortcut, so contract-bearing and ordinary shortcuts keep one layout.
+// Returns false when the command is not a shortcut or carries neither an
+// overlay nor contract help.
 //
 // The lead is the command's pristine base (captureHelpBase): a shortcut with a
 // hand-authored Long keeps it, while structured affordance guidance is
@@ -224,9 +224,8 @@ func prepareMethodHelp(
 //
 // Tips precedence (intentional, not a bug): the overlay's ### Tips win. The
 // shortcut's declarative Tips (the Go Tips field) are only a fallback used when
-// the overlay declares none; when the overlay has tips, the Go tips are dropped
-// (replaced, not merged) so tips never render twice. Authoring a ### Tips block
-// therefore silently retires that shortcut's Go Tips — consolidate into one.
+// the overlay declares none. The selected list is stored back on the command
+// and removed from the affordance block so the root renderer emits it once.
 func PrepareShortcutHelp(cmd *cobra.Command, skillFS fs.FS) bool {
 	return PrepareShortcutHelpWithReferences(cmd, skillFS, nil)
 }
@@ -249,13 +248,15 @@ func PrepareShortcutHelpWithReferences(cmd *cobra.Command, skillFS fs.FS, refere
 	if !hasAffordance && contractHelp == "" {
 		return false
 	}
-	if len(a.Tips) == 0 {
-		a.Tips = cmdutil.GetTips(cmd)
+	tips := a.Tips
+	if len(tips) == 0 {
+		tips = cmdutil.GetTips(cmd)
 	}
+	cmdutil.SetTips(cmd, tips)
+	a.Tips = nil
 
 	var b strings.Builder
 	b.WriteString(captureHelpBase(cmd, shortcutBaseAnnotation))
-	writeRisk(&b, cmd)
 	if block := renderAffordanceValue(a); block != "" {
 		b.WriteString("\n\n")
 		b.WriteString(block)
@@ -284,12 +285,7 @@ func writeRisk(b *strings.Builder, cmd *cobra.Command) {
 	if !ok {
 		return
 	}
-	// --yes asserts the USER confirmed; the agent must not self-approve.
-	if level == cmdutil.RiskHighRiskWrite {
-		fmt.Fprintf(b, "\n\nRisk: %s (requires explicit user confirmation to execute; the agent must NOT add --yes on its own — only pass --yes after the user has confirmed)", level)
-	} else {
-		fmt.Fprintf(b, "\n\nRisk: %s", level)
-	}
+	fmt.Fprintf(b, "\n\n%s", cmdutil.RiskHelpText(level))
 }
 
 // writeRelatedSkills appends the "Related skills" block for the entries that

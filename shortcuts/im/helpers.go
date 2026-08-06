@@ -31,8 +31,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Kept until structured mention flags replace legacy inline-tag handling.
-var mentionFixRe = regexp.MustCompile(`<at\s+(id|open_id|user_id)=("?)([^"\s/>]+)"?\s*/?>`)
 var threadIDRe = regexp.MustCompile(`^omt_`)
 var messageIDRe = regexp.MustCompile(`^om_`)
 
@@ -46,10 +44,6 @@ func flagMessageID(rt *common.RuntimeContext) (string, error) {
 			"invalid message ID %q: omt_ prefix is a thread ID, not a message ID; flag operations require om_ message IDs", id).WithParam("--message-id")
 	}
 	return validateMessageID(id)
-}
-
-func normalizeAtMentions(content string) string {
-	return mentionFixRe.ReplaceAllString(content, `<at user_id="$3">`)
 }
 
 // buildMGetURL constructs the mget query URL for batch-fetching messages.

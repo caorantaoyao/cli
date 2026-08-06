@@ -148,6 +148,9 @@ type ServiceMethodOptions struct {
 	File       string   // --file flag value
 	FileFields []string // auto-detected file field names from metadata
 
+	identityDefaulted   bool
+	identityWarningSent bool
+
 	// binder owns the generated typed param flags — registration and the
 	// --params overlay — replacing the raw paramFlags side-channel.
 	binder *paramFlagBinder
@@ -383,6 +386,15 @@ func buildMethodCommand(ctx context.Context, f *cmdutil.Factory, spec methodComm
 
 func serviceMethodRun(opts *ServiceMethodOptions) error {
 	f := opts.Factory
+	contract, contractFound := imcontract.Lookup(opts.ContractKey)
+	contractManagedWrite := contractFound && contract.Strategy.Kind.IsWrite()
+	contractManagedRead := contractFound && contract.Strategy.Kind.IsRead()
+	if contractManagedRead && opts.PageAll &&
+		contract.Strategy.Kind != imcontract.CollectionReadKind &&
+		contract.Strategy.Kind != imcontract.SearchReadKind {
+		return newIMReadPageAllValidationError()
+	}
+
 	opts.As = f.ResolveAs(opts.Ctx, opts.Cmd, opts.As)
 
 	if err := f.CheckStrictMode(opts.Ctx, opts.As); err != nil {
@@ -395,6 +407,11 @@ func serviceMethodRun(opts *ServiceMethodOptions) error {
 			return err
 		}
 	}
+	opts.identityDefaulted = contractManagedWrite &&
+		serviceMethodSupportsUserAndBot(opts.Method) &&
+		!serviceIdentityFlagChanged(opts.Cmd) &&
+		f.IdentityAutoDetected &&
+		!f.ResolveStrictMode(opts.Ctx).IsActive()
 
 	if opts.PageAll && opts.Output != "" {
 		return errs.NewValidationError(errs.SubtypeInvalidArgument, "--output and --page-all are mutually exclusive").WithParam("--output")
@@ -402,9 +419,6 @@ func serviceMethodRun(opts *ServiceMethodOptions) error {
 	if err := output.ValidateJqFlags(opts.JqExpr, opts.Output, opts.Format); err != nil {
 		return err
 	}
-	contract, contractFound := imcontract.Lookup(opts.ContractKey)
-	contractManagedWrite := contractFound && contract.Strategy.Kind.IsWrite()
-	contractManagedRead := contractFound && contract.Strategy.Kind.IsRead()
 	if contractManagedWrite && opts.Output != "" {
 		return errs.NewValidationError(errs.SubtypeInvalidArgument,
 			"--output is not supported for contract-managed IM write commands").
@@ -429,6 +443,7 @@ func serviceMethodRun(opts *ServiceMethodOptions) error {
 		return err
 	}
 	if opts.DryRun {
+		warnServiceIdentityDefaulted(opts)
 		if fileMeta != nil {
 			return cmdutil.PrintDryRunWithFile(request, config, serviceDryRunOutputOptions(f, opts), *fileMeta)
 		}
@@ -578,6 +593,12 @@ func servicePaginateIMRead(
 	format output.Format,
 	session *imcontract.ReadSession,
 ) error {
+	if session == nil {
+		return errs.NewInternalError(errs.SubtypeInvalidResponse, "IM paginated read requires a read session")
+	}
+	if !session.RequiresPagination() {
+		return newIMReadPageAllValidationError()
+	}
 	pagOpts := client.PaginationOptions{
 		PageLimit:          opts.PageLimit,
 		PageDelay:          opts.PageDelay,
@@ -598,6 +619,13 @@ func servicePaginateIMRead(
 	return writeIMReadResult(opts, format, result, merged)
 }
 
+func newIMReadPageAllValidationError() error {
+	return errs.NewValidationError(
+		errs.SubtypeInvalidArgument,
+		"--page-all is not valid for this IM read command",
+	).WithParam("--page-all")
+}
+
 func streamIMReadPages(
 	opts *ServiceMethodOptions,
 	ac *client.APIClient,
@@ -607,7 +635,7 @@ func streamIMReadPages(
 	pagOpts client.PaginationOptions,
 ) error {
 	errOut := opts.Factory.IOStreams.ErrOut
-	emitter := newIMServiceEmitter(opts)
+	emitter := newIMServiceEmitter(opts, nil)
 	var firstPage map[string]interface{}
 	hasItems := false
 	status, pageErr := ac.StreamPagesWithStatus(opts.Ctx, request, pagOpts, func(page map[string]interface{}) error {
@@ -641,6 +669,7 @@ func streamIMReadPages(
 			result.Meta,
 			result.Error,
 			result.Hint,
+			result.Notice,
 			false,
 		); writeErr != nil {
 			return writeErr
@@ -666,6 +695,7 @@ func writeIMReadResult(
 			result.Meta,
 			result.Error,
 			result.Hint,
+			result.Notice,
 			true,
 		); err != nil {
 			return err
@@ -681,6 +711,7 @@ func writeIMReadResult(
 		result.Meta,
 		result.Error,
 		result.Hint,
+		result.Notice,
 		false,
 	); err != nil {
 		return err
@@ -688,14 +719,34 @@ func writeIMReadResult(
 	return readResultExitForProjection(result, true)
 }
 
-func newIMServiceEmitter(opts *ServiceMethodOptions) *output.Emitter {
+func newIMServiceEmitter(opts *ServiceMethodOptions, readNotice map[string]interface{}) *output.Emitter {
 	return output.NewEmitter(output.EmitterConfig{
-		Out:            opts.Factory.IOStreams.Out,
-		ErrOut:         opts.Factory.IOStreams.ErrOut,
-		CommandPath:    opts.Cmd.CommandPath(),
-		Identity:       string(opts.As),
-		NoticeProvider: output.GetNotice,
+		Out:         opts.Factory.IOStreams.Out,
+		ErrOut:      opts.Factory.IOStreams.ErrOut,
+		CommandPath: opts.Cmd.CommandPath(),
+		Identity:    string(opts.As),
+		NoticeProvider: func() map[string]interface{} {
+			base := output.GetNotice()
+			if opts.identityDefaulted {
+				base = imcontract.WithIdentityDefaultedNotice(base, string(opts.As))
+			}
+			return mergeIMServiceNotices(base, readNotice)
+		},
 	})
+}
+
+func mergeIMServiceNotices(base, extra map[string]interface{}) map[string]interface{} {
+	if len(base) == 0 && len(extra) == 0 {
+		return nil
+	}
+	merged := make(map[string]interface{}, len(base)+len(extra))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range extra {
+		merged[key] = value
+	}
+	return merged
 }
 
 func emitIMServiceResult(
@@ -706,8 +757,10 @@ func emitIMServiceResult(
 	meta *output.Meta,
 	resultError *errs.Problem,
 	hint string,
+	readNotice map[string]interface{},
 	projectedRead bool,
 ) error {
+	warnServiceIdentityDefaulted(opts)
 	var errorValue interface{}
 	if resultError != nil {
 		errorValue = resultError
@@ -722,11 +775,29 @@ func emitIMServiceResult(
 			((projectedRead && opts.JqExpr != "") ||
 				(opts.JqExpr == "" && format != output.FormatJSON)),
 	}
-	emitter := newIMServiceEmitter(opts)
+	emitter := newIMServiceEmitter(opts, readNotice)
 	if !ok && (opts.JqExpr != "" || format == output.FormatJSON) {
 		return emitter.PartialFailure(data, emitOpts)
 	}
 	return emitter.Success(data, emitOpts)
+}
+
+func serviceMethodSupportsUserAndBot(method meta.Method) bool {
+	return method.SupportsToken(meta.TokenUser) && method.SupportsToken(meta.TokenTenant)
+}
+
+func serviceIdentityFlagChanged(cmd *cobra.Command) bool {
+	return cmd != nil && cmd.Flags().Changed("as")
+}
+
+func warnServiceIdentityDefaulted(opts *ServiceMethodOptions) {
+	if opts == nil || !opts.identityDefaulted || opts.identityWarningSent {
+		return
+	}
+	opts.identityWarningSent = true
+	fmt.Fprintf(opts.Factory.IOStreams.ErrOut, "warning: %s: %s\n",
+		imcontract.IdentityDefaultedNoticeKey,
+		imcontract.IdentityDefaultedMessage(string(opts.As)))
 }
 
 func readResultExit(result imcontract.ReadResult) error {
@@ -805,6 +876,7 @@ func handleIMWriteContractResponse(
 		nil,
 		nil,
 		result.Hint,
+		nil,
 		false,
 	)
 	if emitErr != nil {
@@ -812,6 +884,7 @@ func handleIMWriteContractResponse(
 			return writeIMContentSafetyFallback(opts, result)
 		}
 		if opts.JqExpr != "" {
+			writeIMJQDiagnostic(opts.Factory.IOStreams.ErrOut)
 			return writeIMJQFallback(opts, result)
 		}
 		return emitErr
@@ -864,15 +937,19 @@ func normalizeIMContractJSONError(err error) error {
 
 func writeIMJQFallback(opts *ServiceMethodOptions, result imcontract.Result) error {
 	env, signal := imcontract.BuildJQOutputFallback(result)
-	if err := newIMServiceEmitter(opts).RedactedFallback(env); err != nil {
+	if err := newIMServiceEmitter(opts, nil).RedactedFallback(env); err != nil {
 		return err
 	}
 	return signal
 }
 
+func writeIMJQDiagnostic(errOut io.Writer) {
+	fmt.Fprintln(errOut, "error: jq projection failed after the IM write completed; inspect --jq")
+}
+
 func writeIMContentSafetyFallback(opts *ServiceMethodOptions, result imcontract.Result) error {
 	env, signal := imcontract.BuildContentSafetyOutputFallback(result)
-	if err := newIMServiceEmitter(opts).RedactedFallback(env); err != nil {
+	if err := newIMServiceEmitter(opts, nil).RedactedFallback(env); err != nil {
 		return err
 	}
 	return signal
@@ -1111,6 +1188,13 @@ func serviceDryRunOutputOptions(f *cmdutil.Factory, opts *ServiceMethodOptions) 
 		Identity:    opts.As,
 		Out:         f.IOStreams.Out,
 		ErrOut:      f.IOStreams.ErrOut,
+		NoticeProvider: func() map[string]interface{} {
+			base := output.GetNotice()
+			if !opts.identityDefaulted {
+				return base
+			}
+			return imcontract.WithIdentityDefaultedNotice(base, string(opts.As))
+		},
 	}
 }
 

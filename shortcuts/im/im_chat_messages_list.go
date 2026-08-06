@@ -43,11 +43,7 @@ var ImChatMessageList = common.Shortcut{
 		{Name: "page-token", Desc: "starting pagination cursor"},
 		{Name: "no-reactions", Type: "bool", Desc: "skip auto-fetching reactions for each message (default: enrichment enabled)"},
 		downloadResourcesFlag,
-	}, common.PageAllFlags()...),
-	Tips: []string{
-		`Example: lark-cli im +chat-messages-list --chat-id <chat_id>`,
-		`Example: lark-cli im +chat-messages-list --chat-id <chat_id> --start 2026-07-01 --end 2026-07-08 --order asc`,
-	},
+	}, common.PageAllFlags(imPageAllPolicy)...),
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		d := common.NewDryRunAPI()
 		chatId, err := resolveChatIDForMessagesList(runtime, true)
@@ -109,7 +105,7 @@ var ImChatMessageList = common.Shortcut{
 				return err
 			}
 		}
-		if err := common.ValidatePageAllFlags(runtime); err != nil {
+		if err := common.ValidatePageAllFlags(runtime, imPageAllPolicy); err != nil {
 			return err
 		}
 		chatId := runtime.Str("chat-id")
@@ -138,14 +134,15 @@ var ImChatMessageList = common.Shortcut{
 		// policy. The IM accumulator preserves message ordering and
 		// final cursor fields without running enrichment per page.
 		result := &imMapListResult{}
-		pagination, err := common.PaginateInto(runtime, common.PageRequest{
+		pagination, paginationStatus, pageErr := common.PaginateInto(runtime, common.PageRequest{
 			Method: http.MethodGet,
 			Path:   imMessagesListPath,
 			Params: messageListPageParams(params),
-		}, result)
-		if err != nil {
-			return err
+		}, result, imPageAllPolicy)
+		if pageErr != nil && paginationStatus.PagesFetched == 0 {
+			return pageErr
 		}
+		runtime.RecordPagination(paginationStatus)
 		rawItems := result.interfaceItems()
 		hasMore := result.hasMore
 		nextPageToken := result.pageToken

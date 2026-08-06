@@ -47,7 +47,7 @@ var ImFeedShortcutList = common.Shortcut{
 		return d
 	},
 	Execute: func(ctx context.Context, runtime *common.RuntimeContext) error {
-		pages, status, pageErr := paginateIM(runtime, func(pageToken string) (map[string]any, error) {
+		pages, status, pageErr := collectIMPages(runtime, runtime.Bool("page-all"), func(pageToken string) (map[string]any, error) {
 			return runtime.DoAPIJSONTyped("GET", "/open-apis/im/v2/feed_shortcuts",
 				feedShortcutListQuery(pageToken), nil)
 		})

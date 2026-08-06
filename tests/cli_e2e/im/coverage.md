@@ -21,7 +21,6 @@
   - affected_commands: `im +chat-search`, `im +messages-search`
   - coverage_rule: deterministic search assertions must use stable pre-existing fixtures
   - next_fixture_requirement: stable historical chat/message fixtures
-  - replay: see [failure_inventory.md](failure_inventory.md)
 
 ## Command Table
 

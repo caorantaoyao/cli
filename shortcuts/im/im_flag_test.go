@@ -675,8 +675,9 @@ func TestImFlagListJSONIncludesCompletenessEnvelopeAndBothBuckets(t *testing.T) 
 			Active  []map[string]any `json:"flag_items"`
 			Deleted []map[string]any `json:"delete_flag_items"`
 		} `json:"data"`
-		Meta *output.Meta `json:"meta"`
-		Hint string       `json:"hint"`
+		Meta   *output.Meta           `json:"meta"`
+		Hint   string                 `json:"hint"`
+		Notice map[string]interface{} `json:"_notice"`
 	}
 	out := rt.Factory.IOStreams.Out.(*bytes.Buffer).Bytes()
 	if err := json.Unmarshal(out, &envelope); err != nil {
@@ -687,9 +688,10 @@ func TestImFlagListJSONIncludesCompletenessEnvelopeAndBothBuckets(t *testing.T) 
 		envelope.Data.Deleted[0]["item_id"] != "om_deleted" {
 		t.Fatalf("envelope data = %#v, ok = %v", envelope.Data, envelope.OK)
 	}
-	if envelope.Meta == nil || envelope.Meta.Complete == nil || *envelope.Meta.Complete ||
-		envelope.Meta.PagesFetched != 1 || envelope.Meta.StopReason != "single_page" ||
-		envelope.Meta.NextPageToken != "next" {
+	readNotice, _ := envelope.Notice["im_read"].(map[string]interface{})
+	if envelope.Meta == nil || envelope.Meta.Pagination == nil || envelope.Meta.Pagination.Complete ||
+		envelope.Meta.Pagination.Pages != 1 || envelope.Meta.Pagination.NextToken != "next" ||
+		readNotice["stop_reason"] != "single_page" {
 		t.Fatalf("meta = %#v, want incomplete single_page", envelope.Meta)
 	}
 	if !strings.Contains(envelope.Hint, "Result is incomplete.") {
@@ -1853,6 +1855,7 @@ func TestExecuteListAllPages_ContinuesFromPageToken(t *testing.T) {
 	cmd.Flags().Int("page-size", 50, "")
 	cmd.Flags().String("page-token", "", "")
 	cmd.Flags().Int("page-limit", 10, "")
+	cmd.Flags().Bool("page-all", true, "")
 	cmd.Flags().Bool("enrich-feed-thread", false, "")
 	if err := cmd.ParseFlags([]string{"--page-token", "resume"}); err != nil {
 		t.Fatalf("ParseFlags() error = %v", err)
@@ -1980,9 +1983,9 @@ func TestExecuteListAllPages_PageLimit(t *testing.T) {
 	if _, exists := data["truncated"]; exists {
 		t.Fatalf("output schema must remain unchanged; unexpected truncated field in %#v", data)
 	}
-	meta, _ := envelope["meta"].(map[string]any)
-	if meta["complete"] != false || meta["stop_reason"] != "page_limit" {
-		t.Fatalf("meta = %#v, want incomplete page-limit result", meta)
+	pagination, readNotice := requireIMReadEnvelopeMeta(t, envelope)
+	if pagination["complete"] != false || readNotice["stop_reason"] != "page_limit" {
+		t.Fatalf("envelope = %#v, want incomplete page-limit result", envelope)
 	}
 	if hint, _ := envelope["hint"].(string); !strings.Contains(hint, "--page-limit 0") {
 		t.Fatalf("hint = %q, want exhaustive-read recovery", hint)
@@ -2037,8 +2040,8 @@ func TestExecuteListAllPages_RepeatedTokenDoesNotReportPageLimit(t *testing.T) {
 	if err := json.Unmarshal(rt.IO().Out.(*bytes.Buffer).Bytes(), &envelope); err != nil {
 		t.Fatalf("decode stdout: %v", err)
 	}
-	meta, _ := envelope["meta"].(map[string]any)
-	if envelope["ok"] != false || meta["stop_reason"] != "repeated_token" {
+	pagination, readNotice := requireIMReadEnvelopeMeta(t, envelope)
+	if envelope["ok"] != false || pagination["complete"] != false || readNotice["stop_reason"] != "repeated_token" {
 		t.Fatalf("envelope = %#v, want attributed incomplete read", envelope)
 	}
 }

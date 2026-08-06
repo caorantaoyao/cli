@@ -4,6 +4,8 @@
 package imcontract
 
 import (
+	"maps"
+
 	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/client"
 	"github.com/larksuite/cli/internal/output"
@@ -30,6 +32,7 @@ type ReadResult struct {
 	OK       bool
 	Data     any
 	Meta     *output.Meta
+	Notice   map[string]interface{}
 	Error    *errs.Problem
 	Hint     string
 	ExitCode int
@@ -62,6 +65,38 @@ func NewReadSession(contract Contract, options ReadOptions) (*ReadSession, error
 func (s *ReadSession) ObservePagination(status client.PaginationStatus) {
 	s.status = status
 	s.observed = true
+}
+
+// ObserveOutputPagination adapts the shared output pagination contract into
+// the neutral facts consumed by the IM read contract. Existing IM commands
+// that already record a richer PaginationStatus keep that observation.
+func (s *ReadSession) ObserveOutputPagination(meta *output.PaginationMeta, startedFromToken bool) error {
+	if s.observed {
+		return nil
+	}
+	if meta == nil || meta.Pages < 1 {
+		return errs.NewInternalError(
+			errs.SubtypeInvalidResponse,
+			"IM collection read completed without valid pagination metadata",
+		)
+	}
+	status := client.PaginationStatus{
+		PagesFetched:  meta.Pages,
+		HasMore:       !meta.Complete,
+		NextPageToken: meta.NextToken,
+	}
+	switch {
+	case startedFromToken:
+		status.StopReason = client.StopReasonStartPageToken
+	case meta.Complete:
+		status.StopReason = client.StopReasonExhausted
+	case s.options.FullRead:
+		status.StopReason = client.StopReasonPageLimit
+	default:
+		status.StopReason = client.StopReasonSinglePage
+	}
+	s.ObservePagination(status)
+	return nil
 }
 
 func (s *ReadSession) ObserveMaterialization(status MaterializationStatus) {
@@ -108,9 +143,13 @@ func (s *ReadSession) Finalize(data any) (ReadResult, error) {
 		)
 	}
 
+	data = canonicalReadData(data, s.status)
 	result, err := finalizePagedRead(data, s.status, s.options.FullRead)
 	if err != nil {
 		return ReadResult{}, err
+	}
+	if result.Meta != nil && result.Meta.Pagination != nil {
+		result.Meta.Pagination.Items = readItemCount(data, s.contract.Strategy.CollectionField)
 	}
 	if s.contract.Strategy.RequiresMaterialization {
 		result, err = s.finalizeMaterialization(result)
@@ -124,6 +163,31 @@ func (s *ReadSession) Finalize(data any) (ReadResult, error) {
 		result.Hint = joinHints(result.Hint, hintSearchEmpty)
 	}
 	return result, nil
+}
+
+// canonicalReadData removes page-relative transport fields when an incomplete
+// operation carries has_more=false. That value only describes the final page
+// observed (for example after starting from a supplied cursor or encountering
+// server truncation); it cannot prove collection-level completeness.
+// meta.pagination remains the sole operation-level completeness and resume
+// surface. Compatible has_more=true resume fields remain untouched.
+func canonicalReadData(data any, status client.PaginationStatus) any {
+	if status.StopReason == client.StopReasonExhausted {
+		return data
+	}
+	object, ok := data.(map[string]any)
+	if !ok {
+		return data
+	}
+	hasMore, present := object["has_more"].(bool)
+	if !present || hasMore {
+		return data
+	}
+	canonical := maps.Clone(object)
+	delete(canonical, "has_more")
+	delete(canonical, "page_token")
+	delete(canonical, "next_page_token")
+	return canonical
 }
 
 func (s *ReadSession) finalizeMaterialization(result ReadResult) (ReadResult, error) {
@@ -144,15 +208,14 @@ func (s *ReadSession) finalizeMaterialization(result ReadResult) (ReadResult, er
 	result.Data = data
 
 	materializationComplete := s.materialization.complete()
-	if result.Meta == nil || result.Meta.Complete == nil {
+	if result.Meta == nil || result.Meta.Pagination == nil {
 		return ReadResult{}, errs.NewInternalError(
 			errs.SubtypeInvalidResponse,
 			"IM search materialization requires pagination completeness",
 		)
 	}
-	*result.Meta.Complete = *result.Meta.Complete && materializationComplete
 	if materializationComplete {
-		if *result.Meta.Complete {
+		if result.Meta.Pagination.Complete {
 			result.Hint = "Results are ready to use. Use message_id/file_key directly; do not call messages-mget."
 		}
 		return result, nil
@@ -182,21 +245,25 @@ func (s *ReadSession) finalizeMaterialization(result ReadResult) (ReadResult, er
 }
 
 func finalizePagedRead(data any, status client.PaginationStatus, fullRead bool) (ReadResult, error) {
-	complete := false
 	result := ReadResult{
 		OK:   true,
 		Data: data,
 		Meta: &output.Meta{
-			Complete:      &complete,
-			PagesFetched:  status.PagesFetched,
-			StopReason:    string(status.StopReason),
-			NextPageToken: status.NextPageToken,
+			Pagination: &output.PaginationMeta{
+				Pages:     status.PagesFetched,
+				NextToken: status.NextPageToken,
+			},
+		},
+		Notice: map[string]interface{}{
+			"im_read": map[string]interface{}{
+				"stop_reason": string(status.StopReason),
+			},
 		},
 	}
 
 	switch status.StopReason {
 	case client.StopReasonExhausted:
-		complete = true
+		result.Meta.Pagination.Complete = true
 	case client.StopReasonSinglePage:
 		result.Hint = hintSinglePage
 	case client.StopReasonPageLimit:
@@ -244,8 +311,20 @@ func finalizePagedRead(data any, status client.PaginationStatus, fullRead bool) 
 			status.StopReason,
 		)
 	}
-	*result.Meta.Complete = complete
 	return result, nil
+}
+
+func readItemCount(data any, preferredField string) int {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return 0
+	}
+	field := preferredField
+	if field == "" {
+		field = output.FindArrayField(m)
+	}
+	items, _ := m[field].([]interface{})
+	return len(items)
 }
 
 func normalizeReadProblem(problem *errs.Problem) {

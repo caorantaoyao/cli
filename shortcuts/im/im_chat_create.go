@@ -41,10 +41,6 @@ var ImChatCreate = common.Shortcut{
 		{Name: "set-bot-manager", Type: "bool", Desc: "set the bot that creates this chat as manager (bot identity only)"},
 		{Name: "idempotency-key", Desc: "caller-owned key for safely retrying the same chat creation within 10 hours (max 50 chars)"},
 	},
-	Tips: []string{
-		`Example: lark-cli im +chat-create --name "project chat" --idempotency-key <generated_uuid>`,
-		`Example: lark-cli im +chat-create --name "project chat" --users <open_id1>,<open_id2> --idempotency-key <generated_uuid>`,
-	},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		body := buildCreateChatBody(runtime)
 		params := map[string]interface{}{

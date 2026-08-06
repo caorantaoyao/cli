@@ -18,13 +18,9 @@ type Envelope struct {
 
 // Meta carries optional metadata in envelope responses.
 type Meta struct {
-	Count         int             `json:"count,omitempty"`
-	Rollback      string          `json:"rollback,omitempty"`
-	Pagination    *PaginationMeta `json:"pagination,omitempty"`
-	Complete      *bool           `json:"complete,omitempty"`
-	PagesFetched  int             `json:"pages_fetched,omitempty"`
-	StopReason    string          `json:"stop_reason,omitempty"`
-	NextPageToken string          `json:"next_page_token,omitempty"`
+	Count      int             `json:"count,omitempty"`
+	Rollback   string          `json:"rollback,omitempty"`
+	Pagination *PaginationMeta `json:"pagination,omitempty"`
 }
 
 // PaginationMeta reports how a paginated read ended.

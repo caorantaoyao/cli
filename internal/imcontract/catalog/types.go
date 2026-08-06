@@ -122,7 +122,7 @@ const (
 func (p HelpPolicy) Text() string {
 	switch p {
 	case HelpCompleteness:
-		return "Completeness: use --page-all --page-limit 0 for exhaustive output; only meta.complete=true proves completion."
+		return "Completeness: use --page-all --page-limit 0 for exhaustive output; only meta.pagination.complete=true proves pagination completion."
 	case HelpAcceptanceOnly:
 		return "Verify the final state with lark-cli im chat.moderation get --chat-id <same_chat_id> --as <same_identity>."
 	default:

@@ -107,7 +107,9 @@ func installMentionFlagParser(cmd *cobra.Command) {
 		return
 	}
 	flag.Value = &mentionSliceValue{}
-	flag.DefValue = "[]"
+	// pflag does not recognize this custom slice type as a zero value. Keep the
+	// semantic default empty so help does not render the synthetic "(default [])".
+	flag.DefValue = ""
 }
 
 func (r mentionRequest) requested() bool {

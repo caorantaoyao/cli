@@ -544,10 +544,10 @@ func TestResolveMediaContentURLUploadFailure(t *testing.T) {
 		videoCover string
 		audio      string
 	}{
-		{name: "image URL upload failure", image: "https://mock.example.com/image.png"},
-		{name: "file URL upload failure", file: "https://mock.example.com/report.pdf"},
-		{name: "video URL upload failure", video: "https://mock.example.com/video.mp4", videoCover: "img_cover_x"},
-		{name: "audio URL upload failure", audio: "https://mock.example.com/audio.ogg"},
+		{name: "image URL upload failure", image: "https://example.com/image.png"},
+		{name: "file URL upload failure", file: "https://example.com/report.pdf"},
+		{name: "video URL upload failure", video: "https://example.com/video.mp4", videoCover: "img_cover_x"},
+		{name: "audio URL upload failure", audio: "https://example.com/audio.ogg"},
 	}
 
 	for _, tt := range tests {

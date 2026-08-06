@@ -135,6 +135,28 @@ func TestChatMembersValidate(t *testing.T) {
 	}
 }
 
+func TestChatMembersValidateRejectsPaginationValuesAboveSharedBounds(t *testing.T) {
+	noop := shortcutRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("validation must fail before an API request")
+		return nil, nil
+	})
+	for _, tc := range []struct {
+		name  string
+		flag  string
+		value int
+	}{
+		{name: "page limit", flag: "page-limit", value: imReadMaxPageLimit + 1},
+		{name: "page delay", flag: "page-delay", value: imReadMaxPageDelay + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime := newChatMembersTestRuntime(t, noop,
+				map[string]string{"chat-id": "oc_test"}, nil, map[string]int{tc.flag: tc.value})
+			err := ImChatMembersList.Validate(context.Background(), runtime)
+			assertValidationError(t, tc.name, err, "--"+tc.flag)
+		})
+	}
+}
+
 // assertValidationError checks err satisfies the repo's typed-error contract for
 // a validation failure: a *errs.ValidationError carrying the expected Param, and
 // problem metadata of category validation / subtype invalid_argument.

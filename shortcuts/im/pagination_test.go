@@ -35,7 +35,6 @@ func TestIMReadShortcutsExposeUniformPaginationFlags(t *testing.T) {
 		ImThreadsMessagesList,
 	}
 	for _, shortcut := range shortcuts {
-		shortcut := shortcut
 		t.Run(shortcut.Command, func(t *testing.T) {
 			t.Parallel()
 			flags := make(map[string]common.Flag, len(shortcut.Flags))
@@ -52,6 +51,27 @@ func TestIMReadShortcutsExposeUniformPaginationFlags(t *testing.T) {
 			}
 		})
 	}
+}
+
+func requireIMReadEnvelopeMeta(t *testing.T, envelope map[string]any) (map[string]any, map[string]any) {
+	t.Helper()
+	meta, ok := envelope["meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("meta = %#v, want object", envelope["meta"])
+	}
+	pagination, ok := meta["pagination"].(map[string]any)
+	if !ok {
+		t.Fatalf("meta.pagination = %#v, want object", meta["pagination"])
+	}
+	notice, ok := envelope["_notice"].(map[string]any)
+	if !ok {
+		t.Fatalf("_notice = %#v, want object", envelope["_notice"])
+	}
+	readNotice, ok := notice["im_read"].(map[string]any)
+	if !ok {
+		t.Fatalf("_notice.im_read = %#v, want object", notice["im_read"])
+	}
+	return pagination, readNotice
 }
 
 func TestValidateIMPaginationAcceptsUnlimitedAndRejectsNegativeLimit(t *testing.T) {
@@ -71,7 +91,7 @@ func TestValidateIMPaginationAcceptsUnlimitedAndRejectsNegativeLimit(t *testing.
 	}
 }
 
-func TestPaginateIMStopReasons(t *testing.T) {
+func TestCollectIMPagesStopReasons(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -138,12 +158,11 @@ func TestPaginateIMStopReasons(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			rt := newIMPaginationTestRuntime(t, tt.pageAll, tt.pageLimit, tt.startToken, 0)
 			call := 0
-			gotPages, status, err := paginateIM(rt, func(token string) (map[string]any, error) {
+			gotPages, status, err := collectIMPages(rt, tt.pageAll, func(token string) (map[string]any, error) {
 				if call >= len(tt.pages) {
 					t.Fatalf("unexpected page fetch %d with token %q", call+1, token)
 				}
@@ -152,7 +171,7 @@ func TestPaginateIMStopReasons(t *testing.T) {
 				return page, nil
 			})
 			if err != nil {
-				t.Fatalf("paginateIM() error = %v", err)
+				t.Fatalf("collectIMPages() error = %v", err)
 			}
 			if len(gotPages) != tt.wantCount || status.PagesFetched != tt.wantCount {
 				t.Fatalf("pages = %d, status.PagesFetched = %d, want %d", len(gotPages), status.PagesFetched, tt.wantCount)
@@ -167,7 +186,7 @@ func TestPaginateIMStopReasons(t *testing.T) {
 	}
 }
 
-func TestPaginateIMRejectsMissingAndRepeatedTokensWithoutLeakingThem(t *testing.T) {
+func TestCollectIMPagesRejectsMissingAndRepeatedTokensWithoutLeakingThem(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -190,18 +209,17 @@ func TestPaginateIMRejectsMissingAndRepeatedTokensWithoutLeakingThem(t *testing.
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			rt := newIMPaginationTestRuntime(t, true, 0, "", 0)
 			call := 0
-			gotPages, status, err := paginateIM(rt, func(string) (map[string]any, error) {
+			gotPages, status, err := collectIMPages(rt, true, func(string) (map[string]any, error) {
 				page := tt.pages[call]
 				call++
 				return page, nil
 			})
 			if err == nil {
-				t.Fatal("paginateIM() error = nil")
+				t.Fatal("collectIMPages() error = nil")
 			}
 			problem, ok := errs.ProblemOf(err)
 			if !ok || problem.Subtype != errs.SubtypeInvalidResponse {
@@ -220,7 +238,7 @@ func TestPaginateIMRejectsMissingAndRepeatedTokensWithoutLeakingThem(t *testing.
 	}
 }
 
-func TestPaginateIMValidatesTokensBeforeNonFullReadStops(t *testing.T) {
+func TestCollectIMPagesValidatesTokensBeforeNonFullReadStops(t *testing.T) {
 	tests := []struct {
 		name       string
 		startToken string
@@ -242,11 +260,11 @@ func TestPaginateIMValidatesTokensBeforeNonFullReadStops(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rt := newIMPaginationTestRuntime(t, false, imReadDefaultPageLimit, tt.startToken, 0)
-			pages, status, err := paginateIM(rt, func(string) (map[string]any, error) {
+			pages, status, err := collectIMPages(rt, false, func(string) (map[string]any, error) {
 				return tt.page, nil
 			})
 			if err == nil {
-				t.Fatal("paginateIM() error = nil, want invalid_response")
+				t.Fatal("collectIMPages() error = nil, want invalid_response")
 			}
 			problem, ok := errs.ProblemOf(err)
 			if !ok || problem.Category != errs.CategoryInternal ||
@@ -263,9 +281,9 @@ func TestPaginateIMValidatesTokensBeforeNonFullReadStops(t *testing.T) {
 	}
 }
 
-func TestPaginateIMNonFullReadStillReportsNaturalExhaustion(t *testing.T) {
+func TestCollectIMPagesNonFullReadStillReportsNaturalExhaustion(t *testing.T) {
 	rt := newIMPaginationTestRuntime(t, false, imReadDefaultPageLimit, "", 0)
-	pages, status, err := paginateIM(rt, func(string) (map[string]any, error) {
+	pages, status, err := collectIMPages(rt, false, func(string) (map[string]any, error) {
 		return map[string]any{"has_more": false}, nil
 	})
 	if err != nil {
@@ -276,13 +294,13 @@ func TestPaginateIMNonFullReadStillReportsNaturalExhaustion(t *testing.T) {
 	}
 }
 
-func TestPaginateIMPreservesPartialPagesOnTypedFailure(t *testing.T) {
+func TestCollectIMPagesPreservesPartialPagesOnTypedFailure(t *testing.T) {
 	t.Parallel()
 
 	wantErr := errs.NewNetworkError(errs.SubtypeNetworkTimeout, "request timed out").WithRetryable()
 	rt := newIMPaginationTestRuntime(t, true, 0, "", 0)
 	call := 0
-	pages, status, err := paginateIM(rt, func(string) (map[string]any, error) {
+	pages, status, err := collectIMPages(rt, true, func(string) (map[string]any, error) {
 		call++
 		if call == 1 {
 			return map[string]any{"items": []any{"a"}, "has_more": true, "page_token": "p2"}, nil
@@ -417,7 +435,6 @@ func TestIMNewlyPaginatedShortcutsWalkAllPages(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			var tokens []string
 			rt := newBotShortcutRuntime(t, shortcutRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -453,6 +470,7 @@ func addUniformPaginationTestFlags(cmd *cobra.Command) {
 	cmd.Flags().String("page-token", "", "")
 	cmd.Flags().Bool("page-all", true, "")
 	cmd.Flags().Int("page-limit", 0, "")
+	cmd.Flags().Int("page-delay", 0, "")
 }
 
 func newPaginatedChatListCommand(t *testing.T) *cobra.Command {

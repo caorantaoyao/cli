@@ -214,8 +214,7 @@ func TestWriteSuccessEnvelope_BlockModeReturnsTypedErrorWithoutStdout(t *testing
 }
 
 func TestEnvelopeCompleteSerializesFalse(t *testing.T) {
-	complete := false
-	raw, err := json.Marshal(Envelope{OK: true, Meta: &Meta{Complete: &complete}})
+	raw, err := json.Marshal(Envelope{OK: true, Meta: &Meta{Pagination: &PaginationMeta{Complete: false}}})
 	if err != nil {
 		t.Fatal(err)
 	}

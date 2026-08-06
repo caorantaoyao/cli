@@ -96,24 +96,6 @@ func TestChatCreateIdempotencyKeyValidation(t *testing.T) {
 	})
 }
 
-func TestChatCreateTipsUseRequiredIdempotencyKey(t *testing.T) {
-	for _, tip := range ImChatCreate.Tips {
-		if strings.HasPrefix(tip, "Example:") && !strings.Contains(tip, "--idempotency-key") {
-			t.Fatalf("chat-create tip omits required idempotency key: %q", tip)
-		}
-	}
-}
-
-func TestChatCreateTipsUseGeneratedUUIDPlaceholder(t *testing.T) {
-	help := strings.Join(ImChatCreate.Tips, "\n")
-	if !strings.Contains(help, "--idempotency-key <generated_uuid>") {
-		t.Fatalf("chat-create tips omit generated UUID placeholder: %s", help)
-	}
-	if strings.Contains(help, "python3 -c") || strings.Contains(help, "uuidgen") {
-		t.Fatalf("chat-create tips duplicate the shared UUID generation tutorial: %s", help)
-	}
-}
-
 func assertChatCreateMissingIdempotencyKey(t *testing.T, key string) {
 	t.Helper()
 

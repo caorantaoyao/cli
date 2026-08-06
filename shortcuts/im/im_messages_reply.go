@@ -17,7 +17,7 @@ import (
 var ImMessagesReply = common.Shortcut{
 	Service:     "im",
 	Command:     "+messages-reply",
-	Description: "Reply to a message (supports thread replies); user/bot; supports text/markdown/post/media replies, reply-in-thread, idempotency key",
+	Description: "Reply to a message (supports thread replies); user/bot; content inputs cover text, Markdown, structured post JSON, and media (image/file/video/audio); reply-in-thread and idempotency key",
 	Risk:        "write",
 	Scopes:      []string{"im:message:send_as_bot"},
 	UserScopes:  []string{"im:message.send_as_user", "im:message"},
@@ -40,11 +40,9 @@ var ImMessagesReply = common.Shortcut{
 		{Name: "idempotency-key", Desc: "idempotency key, max 50 characters (prevents duplicate sends)"},
 	},
 	Tips: []string{
-		`Example: lark-cli im +messages-reply --message-id <message_id> --text "reply" --as bot`,
-		`Example: lark-cli im +messages-reply --message-id <message_id> --text "please review" --mention <user_id_or_open_id> --idempotency-key <generated_uuid> --as bot`,
-		`Example: lark-cli im +messages-reply --message-id <message_id> --text "reply" --reply-in-thread --as bot`,
+		messageContentTip,
 	},
-	PostMount: installMentionFlagParser,
+	PostMount: installMessageFlagBehavior,
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		messageId := runtime.Str("message-id")
 		msgType := runtime.Str("msg-type")

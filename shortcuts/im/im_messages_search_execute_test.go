@@ -213,17 +213,19 @@ func TestImMessagesSearchExplicitPageLimitAutoPaginatesAndReportsLimit(t *testin
 		t.Fatalf("page tokens = %#v, want explicit --page-limit to fetch two pages", pageTokens)
 	}
 	var envelope struct {
-		OK   bool         `json:"ok"`
-		Meta *output.Meta `json:"meta"`
-		Hint string       `json:"hint"`
+		OK     bool                   `json:"ok"`
+		Meta   *output.Meta           `json:"meta"`
+		Hint   string                 `json:"hint"`
+		Notice map[string]interface{} `json:"_notice"`
 	}
 	out := runtime.Factory.IOStreams.Out.(*bytes.Buffer).Bytes()
 	if err := json.Unmarshal(out, &envelope); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, out)
 	}
-	if !envelope.OK || envelope.Meta == nil || envelope.Meta.Complete == nil ||
-		*envelope.Meta.Complete || envelope.Meta.PagesFetched != 2 ||
-		envelope.Meta.StopReason != "page_limit" || envelope.Meta.NextPageToken != "tok_p3" {
+	readNotice, _ := envelope.Notice["im_read"].(map[string]interface{})
+	if !envelope.OK || envelope.Meta == nil || envelope.Meta.Pagination == nil ||
+		envelope.Meta.Pagination.Complete || envelope.Meta.Pagination.Pages != 2 ||
+		envelope.Meta.Pagination.NextToken != "tok_p3" || readNotice["stop_reason"] != "page_limit" {
 		t.Fatalf("envelope = %#v, want incomplete page_limit result", envelope)
 	}
 	const wantHint = "Result is incomplete because --page-limit was reached. Use --page-limit 0 only when exhaustive output is required."

@@ -12,9 +12,15 @@ import (
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
-const imReadDefaultPageLimit = 20
+const (
+	imReadDefaultPageLimit = 20
+	imReadMaxPageLimit     = 1000
+	imReadMaxPageDelay     = 60_000
+)
 
 type imPageFetcher func(pageToken string) (map[string]any, error)
+
+var imPageAllPolicy = common.PageAllPolicy{AllowUnlimited: true}
 
 func imPaginationFlags(defaultLimit int) []common.Flag {
 	if defaultLimit < 0 {
@@ -27,113 +33,46 @@ func imPaginationFlags(defaultLimit int) []common.Flag {
 }
 
 func validateIMPagination(runtime *common.RuntimeContext) error {
-	if runtime.Int("page-limit") < 0 {
+	if limit := runtime.Int("page-limit"); limit < 0 || limit > imReadMaxPageLimit {
 		return errs.NewValidationError(
 			errs.SubtypeInvalidArgument,
-			"--page-limit must be a non-negative integer",
+			"--page-limit must be an integer between 0 and %d (0 = unlimited)",
+			imReadMaxPageLimit,
 		).WithParam("--page-limit")
 	}
-	if runtime.Cmd.Flags().Lookup("page-delay") != nil && runtime.Int("page-delay") < 0 {
-		return errs.NewValidationError(
-			errs.SubtypeInvalidArgument,
-			"--page-delay must be a non-negative integer",
-		).WithParam("--page-delay")
+	if runtime.Cmd.Flags().Lookup("page-delay") != nil {
+		delay := runtime.Int("page-delay")
+		if delay < 0 || delay > imReadMaxPageDelay {
+			return errs.NewValidationError(
+				errs.SubtypeInvalidArgument,
+				"--page-delay must be an integer between 0 and %d",
+				imReadMaxPageDelay,
+			).WithParam("--page-delay")
+		}
 	}
 	return nil
 }
 
-// paginateIM walks an IM shortcut's pages without interpreting whether the
-// result is complete. It returns every successful page plus neutral pagination
-// facts; the IM contract session owns output, hint, and exit-code semantics.
-func paginateIM(runtime *common.RuntimeContext, fetch imPageFetcher) ([]map[string]any, client.PaginationStatus, error) {
-	return paginateIMWithMode(runtime, runtime.Bool("page-all"), fetch)
-}
-
-func paginateIMWithMode(runtime *common.RuntimeContext, autoPaginate bool, fetch imPageFetcher) ([]map[string]any, client.PaginationStatus, error) {
-	startToken := runtime.Str("page-token")
-	pageAll := autoPaginate && startToken == ""
-	pageLimit := runtime.Int("page-limit")
+// collectIMPages adapts IM flags and truncation evidence to the shared
+// callback walker. The IM layer owns no pagination loop or cursor policy.
+func collectIMPages(runtime *common.RuntimeContext, autoPaginate bool, fetch imPageFetcher) ([]map[string]any, client.PaginationStatus, error) {
 	pageDelay := 0
 	if runtime.Cmd.Flags().Lookup("page-delay") != nil {
 		pageDelay = runtime.Int("page-delay")
 	}
-
 	pages := make([]map[string]any, 0, 1)
-	status := client.PaginationStatus{}
-	requestToken := startToken
-	seenTokens := make(map[string]struct{})
-	if startToken != "" {
-		seenTokens[startToken] = struct{}{}
-	}
-
-	for {
-		page, err := fetch(requestToken)
-		if err != nil {
-			status.Cause = err
-			status.StopReason = paginationErrorStopReason(err)
-			return pages, status, err
-		}
+	status, err := common.WalkPages(runtime, common.PageWalkOptions{
+		AutoPaginate:   autoPaginate,
+		PageLimit:      runtime.Int("page-limit"),
+		AllowUnlimited: imPageAllPolicy.AllowUnlimited,
+		PageDelay:      time.Duration(pageDelay) * time.Millisecond,
+		StartPageToken: runtime.Str("page-token"),
+		IsTruncated:    explicitlyTruncated,
+	}, common.PageFetcher(fetch), func(page map[string]any, _ int) error {
 		pages = append(pages, page)
-		status.PagesFetched = len(pages)
-		status.HasMore, status.NextPageToken = common.PaginationMeta(page)
-
-		if explicitlyTruncated(page) {
-			status.StopReason = client.StopReasonServerTruncation
-			return pages, status, nil
-		}
-		if !status.HasMore {
-			if startToken != "" {
-				status.StopReason = client.StopReasonStartPageToken
-				return pages, status, nil
-			}
-			status.StopReason = client.StopReasonExhausted
-			return pages, status, nil
-		}
-		if status.NextPageToken == "" {
-			err := errs.NewInternalError(
-				errs.SubtypeInvalidResponse,
-				"paginated response has_more=true but next page token is missing",
-			)
-			status.Cause = err
-			status.StopReason = client.StopReasonMissingToken
-			return pages, status, err
-		}
-		if _, repeated := seenTokens[status.NextPageToken]; repeated {
-			err := errs.NewInternalError(
-				errs.SubtypeInvalidResponse,
-				"paginated response repeated the same next page token",
-			)
-			status.Cause = err
-			status.StopReason = client.StopReasonRepeatedToken
-			return pages, status, err
-		}
-		if startToken != "" {
-			status.StopReason = client.StopReasonStartPageToken
-			return pages, status, nil
-		}
-		if !pageAll {
-			status.StopReason = client.StopReasonSinglePage
-			return pages, status, nil
-		}
-		if pageLimit > 0 && status.PagesFetched >= pageLimit {
-			status.StopReason = client.StopReasonPageLimit
-			return pages, status, nil
-		}
-
-		requestToken = status.NextPageToken
-		seenTokens[requestToken] = struct{}{}
-		if pageDelay > 0 {
-			time.Sleep(time.Duration(pageDelay) * time.Millisecond)
-		}
-	}
-}
-
-func paginationErrorStopReason(err error) client.StopReason {
-	problem, ok := errs.ProblemOf(err)
-	if ok && problem.Category == errs.CategoryNetwork {
-		return client.StopReasonTransportError
-	}
-	return client.StopReasonAPIError
+		return nil
+	})
+	return pages, status, err
 }
 
 func explicitlyTruncated(page map[string]any) bool {

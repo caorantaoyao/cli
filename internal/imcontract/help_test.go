@@ -14,7 +14,7 @@ func TestHelpPolicyTextUsesOnlyApprovedTemplates(t *testing.T) {
 		policy HelpPolicy
 		want   string
 	}{
-		{HelpCompleteness, "Completeness: use --page-all --page-limit 0 for exhaustive output; only meta.complete=true proves completion."},
+		{HelpCompleteness, "Completeness: use --page-all --page-limit 0 for exhaustive output; only meta.pagination.complete=true proves pagination completion."},
 		{HelpAcceptanceOnly, "Verify the final state with lark-cli im chat.moderation get --chat-id <same_chat_id> --as <same_identity>."},
 		{HelpPolicy("unknown"), ""},
 	}
@@ -32,6 +32,7 @@ func TestRegistryHelpPolicies(t *testing.T) {
 	}{
 		{"im +chat-list", HelpCompleteness},
 		{"im +messages-search", HelpCompleteness},
+		{"im chat.moderation get", HelpCompleteness},
 		{"im +messages-send", ""},
 		{"im messages merge_forward", ""},
 		{"im chat.moderation update", HelpAcceptanceOnly},

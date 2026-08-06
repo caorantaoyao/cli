@@ -141,11 +141,12 @@ func TestIMContractPartialPresentationFallbackKeepsCountsWithoutItems(t *testing
 	if output.ExitCodeOf(rt.outputErr) != output.ExitAPI {
 		t.Fatalf("output error = %T %v", rt.outputErr, rt.outputErr)
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty", stderr.String())
+	if !strings.Contains(stderr.String(), "error: jq projection failed after the IM write completed; inspect --jq") {
+		t.Fatalf("stderr did not identify the jq failure: %q", stderr.String())
 	}
-	if strings.Contains(stdout.String(), secret) || strings.Contains(rt.outputErr.Error(), secret) {
-		t.Fatalf("fallback leaked item or jq detail: stdout=%q err=%v", stdout.String(), rt.outputErr)
+	if strings.Contains(stdout.String(), secret) || strings.Contains(stderr.String(), secret) ||
+		strings.Contains(rt.outputErr.Error(), secret) {
+		t.Fatalf("fallback leaked item or jq detail: stdout=%q stderr=%q err=%v", stdout.String(), stderr.String(), rt.outputErr)
 	}
 	var env map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
@@ -287,8 +288,11 @@ func TestMessagesSearchExplicitUnlimitedLimitRequiresCompleteRead(t *testing.T) 
 		t.Fatalf("stdout is not JSON: %v\n%s", jsonErr, stdout.String())
 	}
 	meta, _ := envelope["meta"].(map[string]any)
-	if envelope["ok"] != false || meta["complete"] != false ||
-		meta["stop_reason"] != string(client.StopReasonServerTruncation) {
+	pagination, _ := meta["pagination"].(map[string]any)
+	notice, _ := envelope["_notice"].(map[string]any)
+	readNotice, _ := notice["im_read"].(map[string]any)
+	if envelope["ok"] != false || pagination["complete"] != false ||
+		readNotice["stop_reason"] != string(client.StopReasonServerTruncation) {
 		t.Fatalf("envelope = %#v", envelope)
 	}
 }
@@ -335,6 +339,9 @@ func TestIMReadLateFailureWritesOneSelfContainedJSONEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta := env["meta"].(map[string]any)
+	pagination := meta["pagination"].(map[string]any)
+	notice := env["_notice"].(map[string]any)
+	readNotice := notice["im_read"].(map[string]any)
 	rawProblem, exists := env["error"]
 	if !exists {
 		t.Fatalf("late failure omitted structured error: %#v", env)
@@ -343,8 +350,8 @@ func TestIMReadLateFailureWritesOneSelfContainedJSONEnvelope(t *testing.T) {
 	if !ok {
 		t.Fatalf("late failure error = %T, want object: %#v", rawProblem, env)
 	}
-	if env["ok"] != false || meta["complete"] != false ||
-		meta["stop_reason"] != "transport_error" || problem["type"] != "network" {
+	if env["ok"] != false || pagination["complete"] != false ||
+		readNotice["stop_reason"] != "transport_error" || problem["type"] != "network" {
 		t.Fatalf("unexpected envelope: %#v", env)
 	}
 	var partial *output.PartialFailureError
@@ -370,7 +377,8 @@ func TestIMReadLateFailureKeepsPresentationAndTypedErrorOutsideJSON(t *testing.T
 		fmt.Fprintln(w, "kept")
 	})
 
-	if stdout.String() != "kept\n" {
+	wantStdout := "kept\n\nPagination: incomplete (1 page(s), 1 item(s)); resume token: \"next\"\n"
+	if stdout.String() != wantStdout {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "hint: The read is incomplete") {
@@ -390,18 +398,17 @@ func TestMergeIMReadMetaHandlesNilInputsAndPreservesBaseFields(t *testing.T) {
 	if baseOnly == nil || baseOnly.Count != 7 || baseOnly.Rollback != "undo-token" {
 		t.Fatalf("base-only meta = %#v", baseOnly)
 	}
-	complete := false
 	contract := &output.Meta{
-		Complete: &complete, PagesFetched: 1, StopReason: "single_page", NextPageToken: "next",
+		Pagination: &output.PaginationMeta{Complete: false, Pages: 1, Items: 2, NextToken: "next"},
 	}
 	contractOnly := mergeIMReadMeta(nil, contract)
-	if contractOnly == nil || contractOnly.Complete == nil || *contractOnly.Complete ||
-		contractOnly.PagesFetched != 1 || contractOnly.StopReason != "single_page" {
+	if contractOnly == nil || contractOnly.Pagination == nil || contractOnly.Pagination.Complete ||
+		contractOnly.Pagination.Pages != 1 || contractOnly.Pagination.Items != 2 {
 		t.Fatalf("contract-only meta = %#v", contractOnly)
 	}
 	merged := mergeIMReadMeta(base, contract)
 	if merged.Count != 7 || merged.Rollback != "undo-token" ||
-		merged.Complete == nil || *merged.Complete || merged.NextPageToken != "next" {
+		merged.Pagination == nil || merged.Pagination.Complete || merged.Pagination.NextToken != "next" {
 		t.Fatalf("merged meta = %#v", merged)
 	}
 }
@@ -419,13 +426,15 @@ func TestIMChatMembersReadPreservesCountMeta(t *testing.T) {
 	rt.Out(map[string]any{"users": []any{"ou_a"}, "bots": []any{"cli_a"}}, &output.Meta{Count: 2})
 
 	var env struct {
-		Meta output.Meta `json:"meta"`
+		Meta   output.Meta            `json:"meta"`
+		Notice map[string]interface{} `json:"_notice"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatal(err)
 	}
-	if env.Meta.Count != 2 || env.Meta.Complete == nil || *env.Meta.Complete ||
-		env.Meta.StopReason != "single_page" {
+	readNotice, _ := env.Notice["im_read"].(map[string]interface{})
+	if env.Meta.Count != 2 || env.Meta.Pagination == nil || env.Meta.Pagination.Complete ||
+		readNotice["stop_reason"] != "single_page" {
 		t.Fatalf("meta = %#v, want count plus incomplete contract fields", env.Meta)
 	}
 }

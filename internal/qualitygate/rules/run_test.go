@@ -6,6 +6,7 @@ package rules
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,7 +149,7 @@ func TestRunReportsMissingIMDomain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !hasIMContractDiagnostic(diags, "", "IM leaf command count is 0, want 60") {
+	if !hasIMContractDiagnostic(diags, "", fmt.Sprintf("IM leaf command count is 0, want %d", expectedIMLeafCommands)) {
 		t.Fatalf("Run() missing-domain diagnostic absent: %#v", diags)
 	}
 }

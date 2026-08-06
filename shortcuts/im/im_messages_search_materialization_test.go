@@ -182,9 +182,9 @@ func TestImMessagesSearchMaterializationPartialLedgerAndUnknownResponseIsolation
 	if got, _ := envelope["ok"].(bool); got {
 		t.Fatalf("ok = true, want false: %#v", envelope)
 	}
-	meta := envelope["meta"].(map[string]interface{})
-	if got, _ := meta["complete"].(bool); got {
-		t.Fatalf("meta.complete = true, want false: %#v", meta)
+	pagination, _ := requireIMReadEnvelopeMeta(t, envelope)
+	if got, _ := pagination["complete"].(bool); !got {
+		t.Fatalf("meta.pagination.complete = false, want exhausted search pagination: %#v", pagination)
 	}
 	data := envelope["data"].(map[string]interface{})
 	if got, want := data["message_ids"], []interface{}{"om_a", "om_b"}; !reflect.DeepEqual(got, want) {
@@ -234,9 +234,9 @@ func TestImMessagesSearchMaterializationCompleteUsesContractHint(t *testing.T) {
 	if got, _ := envelope["ok"].(bool); !got {
 		t.Fatalf("ok = false, want true: %#v", envelope)
 	}
-	meta := envelope["meta"].(map[string]interface{})
-	if got, _ := meta["complete"].(bool); !got {
-		t.Fatalf("meta.complete = false, want true: %#v", meta)
+	pagination, _ := requireIMReadEnvelopeMeta(t, envelope)
+	if got, _ := pagination["complete"].(bool); !got {
+		t.Fatalf("meta.pagination.complete = false, want true: %#v", pagination)
 	}
 	const wantHint = "Results are ready to use. Use message_id/file_key directly; do not call messages-mget."
 	if envelope["hint"] != wantHint {

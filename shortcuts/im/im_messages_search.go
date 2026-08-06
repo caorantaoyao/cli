@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/larksuite/cli/errs"
+	"github.com/larksuite/cli/internal/client"
 	"github.com/larksuite/cli/internal/imcontract"
 	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/shortcuts/common"
@@ -50,12 +51,8 @@ var ImMessagesSearch = common.Shortcut{
 		{Name: "page-size", Aliases: []string{"limit"}, Type: "int", Default: fmt.Sprintf("%d", messagesSearchDefaultPageSize), Desc: fmt.Sprintf("page size (1-%d)", messagesSearchMaxPageSize)},
 		{Name: "page-token", Desc: "starting pagination cursor"},
 		{Name: "page-all", Type: "bool", Desc: "automatically paginate search results"},
-		{Name: "page-limit", Type: "int", Default: "20", Desc: "max search pages when auto-pagination is enabled (default 20, max 40)"},
+		{Name: "page-limit", Type: "int", Default: "20", Desc: "max search pages when auto-pagination is enabled (default 20, max 40; 0 = unlimited)"},
 		{Name: "no-reactions", Type: "bool", Desc: "skip auto-fetching reactions for each message (default: enrichment enabled)"},
-	},
-	Tips: []string{
-		`Example: lark-cli im +messages-search --query "keyword" --as user`,
-		`Example: lark-cli im +messages-search --query "keyword" --chat-id <chat_id> --start 2026-07-01 --end 2026-07-08 --as user`,
 	},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		req, err := buildMessagesSearchRequest(runtime)
@@ -257,8 +254,8 @@ func buildMessagesSearchRequest(runtime *common.RuntimeContext) (*messagesSearch
 
 	if runtime.Cmd != nil && runtime.Cmd.Flags().Changed("page-limit") {
 		pageLimit := runtime.Int("page-limit")
-		if pageLimit < 1 || pageLimit > messagesSearchMaxPageLimit {
-			return nil, errs.NewValidationError(errs.SubtypeInvalidArgument, "--page-limit must be an integer between 1 and 40").WithParam("--page-limit")
+		if pageLimit < 0 || pageLimit > messagesSearchMaxPageLimit {
+			return nil, errs.NewValidationError(errs.SubtypeInvalidArgument, "--page-limit must be between 0 and 40 (0 = unlimited)").WithParam("--page-limit")
 		}
 	}
 
@@ -365,15 +362,11 @@ func buildMessagesSearchRequest(runtime *common.RuntimeContext) (*messagesSearch
 
 // messagesSearchPaginationConfig derives auto-pagination mode and page limit.
 func messagesSearchPaginationConfig(runtime *common.RuntimeContext) (autoPaginate bool, pageLimit int) {
-	autoPaginate = runtime.Bool("page-all")
-	if runtime.Cmd != nil && runtime.Cmd.Flags().Changed("page-limit") {
-		autoPaginate = true
-	}
-
-	pageLimit = messagesSearchDefaultPageLimit
-	if runtime.Cmd != nil && runtime.Cmd.Flags().Changed("page-limit") {
-		pageLimit = min(runtime.Int("page-limit"), messagesSearchMaxPageLimit)
-	} else if runtime.Bool("page-all") {
+	pageAll := runtime.Bool("page-all")
+	limitChanged := runtime.Cmd != nil && runtime.Cmd.Flags().Changed("page-limit")
+	autoPaginate = pageAll || limitChanged
+	pageLimit = runtime.Int("page-limit")
+	if pageAll && !limitChanged {
 		pageLimit = messagesSearchMaxPageLimit
 	}
 	return autoPaginate, pageLimit
@@ -382,58 +375,30 @@ func messagesSearchPaginationConfig(runtime *common.RuntimeContext) (autoPaginat
 // searchMessages fetches message search pages and returns the first server notice.
 func searchMessages(runtime *common.RuntimeContext, req *messagesSearchRequest) ([]interface{}, bool, string, bool, int, string, error) {
 	autoPaginate, pageLimit := messagesSearchPaginationConfig(runtime)
-	pageToken := ""
-	if tokens := req.params["page_token"]; len(tokens) > 0 {
-		pageToken = tokens[0]
-	}
-
-	pageSize := strconv.Itoa(messagesSearchDefaultPageSize)
-	if sizes := req.params["page_size"]; len(sizes) > 0 {
-		pageSize = sizes[0]
-	}
-
-	var (
-		allItems         []interface{}
-		lastHasMore      bool
-		lastPageToken    string
-		truncatedByLimit bool
-		pageCount        int
-		notice           string
-	)
-
-	for {
-		pageCount++
-		params := larkcore.QueryParams{
-			"page_size": []string{pageSize},
-		}
+	pages, status, pageErr := collectIMPages(runtime, autoPaginate, func(pageToken string) (map[string]any, error) {
+		params := cloneQueryParams(req.params)
 		if pageToken != "" {
 			params["page_token"] = []string{pageToken}
+		} else {
+			delete(params, "page_token")
 		}
-
-		searchData, err := runtime.DoAPIJSONTyped(http.MethodPost, "/open-apis/im/v1/messages/search", params, req.body)
-		if err != nil {
-			return nil, false, "", false, pageLimit, "", err
-		}
-
-		if notice == "" {
-			notice, _ = searchData["notice"].(string)
-		}
-		items, _ := searchData["items"].([]interface{})
-		allItems = append(allItems, items...)
-		lastHasMore, lastPageToken = common.PaginationMeta(searchData)
-
-		if !autoPaginate || !lastHasMore || lastPageToken == "" {
-			break
-		}
-		if pageCount >= pageLimit {
-			truncatedByLimit = true
-			break
-		}
-
-		pageToken = lastPageToken
+		return runtime.DoAPIJSONTyped(http.MethodPost, "/open-apis/im/v1/messages/search", params, req.body)
+	})
+	if len(pages) == 0 {
+		return nil, false, "", false, pageLimit, "", pageErr
 	}
+	runtime.RecordPagination(status)
+	merged := mergeIMPageArrays(pages, "items")
+	allItems, _ := merged["items"].([]interface{})
+	notice, _ := merged["notice"].(string)
 
-	return allItems, lastHasMore, lastPageToken, truncatedByLimit, pageLimit, notice, nil
+	return allItems,
+		status.HasMore,
+		status.NextPageToken,
+		status.StopReason == client.StopReasonPageLimit,
+		pageLimit,
+		notice,
+		nil
 }
 
 // batchMGetMessages fetches message details in API-sized batches.

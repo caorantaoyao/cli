@@ -19,7 +19,7 @@ import (
 var ImMessagesSend = common.Shortcut{
 	Service:     "im",
 	Command:     "+messages-send",
-	Description: "Send a message to a chat or direct message; user/bot; sends to chat-id or user-id with text/markdown/post/media, supports idempotency key",
+	Description: "Send a message to a chat or direct message; user/bot; content inputs cover text, Markdown, structured post JSON, and media (image/file/video/audio); supports idempotency key",
 	Risk:        "write",
 	Scopes:      []string{"im:message:send_as_bot"},
 	UserScopes:  []string{"im:message.send_as_user", "im:message"},
@@ -42,11 +42,9 @@ var ImMessagesSend = common.Shortcut{
 		{Name: "audio", Desc: audioMessageInputDesc},
 	},
 	Tips: []string{
-		`Example: lark-cli im +messages-send --chat-id <chat_id> --text "hello" --as bot`,
-		`Example: lark-cli im +messages-send --user-id <open_id> --text "hello" --as bot`,
-		`Example: lark-cli im +messages-send --chat-id <chat_id> --text "please review" --mention <user_id_or_open_id> --idempotency-key <generated_uuid> --as bot`,
+		messageContentTip,
 	},
-	PostMount: installMentionFlagParser,
+	PostMount: installMessageFlagBehavior,
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		chatFlag := runtime.Str("chat-id")
 		userFlag := runtime.Str("user-id")
