@@ -109,18 +109,31 @@ func executeWithOptions(opts []BuildOption) int {
 
 	runErr := rootCmd.Execute()
 
+	// Classify before Shutdown fires, so a plugin's Shutdown handler observes
+	// the same Category / Subtype / exit code the user was given, rather than
+	// the raw cobra error.
+	stage := currentErrorStage()
+	runErr = normalizeRootError(runErr, stage)
+
+	// Write the envelope and settle the exit code first, then notify plugins.
+	// Every error value reachable here has exported fields, and cloning cannot
+	// cover the ones an extension defines, so ordering is what makes the
+	// lifecycle error a snapshot: a handler receives the real value and may do
+	// as it likes with it, while what the user got is already decided.
+	exit := 0
+	if runErr != nil {
+		exit = handleRootError(f, runErr, runtime.recovery, stage)
+	}
+
 	// Fire Shutdown lifecycle hooks regardless of run outcome.
-	// emitShutdown imposes a 2s total deadline and never propagates handler
-	// errors (Emit's documented Shutdown contract), so it cannot block exit
-	// or alter the user-visible exit code.
+	// emitShutdown never propagates handler errors (Emit's documented Shutdown
+	// contract). Its 2s budget is checked between handlers, so a single handler
+	// that ignores ctx can still delay exit.
 	if reg != nil && !isCompletionCommand(os.Args) {
 		_ = hook.Emit(ctx, reg, platform.Shutdown, runErr)
 	}
 
-	if runErr != nil {
-		return handleRootError(f, runErr, runtime.recovery)
-	}
-	return 0
+	return exit
 }
 
 // isDeferredBootstrapProfileError identifies the one bootstrap parse failure
@@ -250,7 +263,9 @@ func configureFlagCompletions(args []string) {
 }
 
 // handleRootError dispatches a command error to the appropriate handler
-// and returns the process exit code.
+// and returns the process exit code. It accepts any error; every error
+// that owns the stderr envelope is written as a typed envelope, while the
+// two exit-code-only signals deliberately write nothing.
 //
 // Dispatch order:
 //  1. Typed errors from errs/ (e.g. *errs.PermissionError, *errs.APIError,
@@ -262,14 +277,13 @@ func configureFlagCompletions(args []string) {
 //     dispatcher no longer promotes any legacy shape here.
 //  2. PartialFailure / BareError signals: the result envelope is already on
 //     stdout; honor the exit code and write nothing to stderr.
-//  3. Residual cobra usage errors (missing required flag, unknown command,
-//     argument validation): typed as an invalid_argument envelope (exit 2),
-//     matching the explicit flag/subcommand guards. Flag parse errors are
-//     already typed upstream by the root FlagErrorFunc.
+//  3. Anything else: classified by normalizeRootError into a typed
+//     validation or internal error, then rendered as case 1 would.
 func handleRootError(
 	f *cmdutil.Factory,
 	err error,
 	projector *recovery.Projector,
+	stage errorStage,
 ) int {
 	errOut := f.IOStreams.ErrOut
 	renderedErr := err
@@ -311,55 +325,57 @@ func handleRootError(
 		return bareErr.Code
 	}
 
-	// Errors reaching here are untyped: every RunE returns a typed errs.* error
-	// and flag-parse errors are typed by the root FlagErrorFunc. The remainder
-	// is either a cobra usage mistake (missing required flag, unknown command,
-	// wrong arg count), which cobra surfaces as a plain error identified by its
-	// stable text — the same external contract unknownFlagName relies on — or an
-	// untyped error that leaked past the typed boundary. Classify the former as
-	// invalid_argument (exit 2, like the explicit guards); treat the latter as an
-	// internal fault (exit 5) rather than blaming the user's input. The message
-	// is preserved either way, and the typed envelope still carries any pending
-	// deprecation notice.
-	var fallback error
-	if isCobraUsageError(err) {
-		fallback = errs.NewValidationError(errs.SubtypeInvalidArgument, "%s", err.Error())
-	} else {
-		fallback = errs.NewInternalError(errs.SubtypeUnknown, "%s", err.Error()).WithCause(err)
-	}
+	// Reaching here means the envelope write above failed, so err cannot
+	// render itself — passing the same value on would fail identically and
+	// leave stderr blank. Build a fresh typed error carrying its message
+	// instead, which is what keeps stderr from going silent on a typed exit.
+	fallback := rebuildTypedError(err, stage)
 	output.WriteTypedErrorEnvelope(errOut, fallback, string(f.ResolvedIdentity))
 	return output.ExitCodeOf(fallback)
 }
 
-// cobraUsageErrorMarkers are the stable error-text fragments cobra / pflag
-// (pinned at v1.10.2) emit for usage mistakes — missing required flag, unknown
-// command / flag, wrong argument count. Cobra surfaces these as plain errors,
-// not a typed value we can match on, so the dispatcher recognizes them by text;
-// this is the same external contract unknownFlagName already depends on. A
-// residual error matching none of these has leaked the typed boundary and is
-// treated as an internal fault, not a user error.
-var cobraUsageErrorMarkers = []string{
-	"unknown command ",
-	"unknown flag: ",
-	"unknown shorthand",
-	"required flag(s) ",
-	"flag needs an argument",
-	"bad flag syntax:",
-	"no such flag ",
-	"invalid argument ",
-	"arg(s), ", // accepts / requires N arg(s), received / only received M
+// normalizeRootError gives an untyped error a typed envelope, taking its
+// category from the error's origin rather than from its text: cobra validates the command
+// line before running any command body, so an untyped error surfacing before
+// a body ran describes what the user typed (invalid_argument), and one
+// surfacing after a body ran is a conversion we are missing on our side
+// (internal). The message and the original error are preserved either way.
+//
+// Already-typed errors and the two exit-code-only signal types
+// (*output.PartialFailureError, *output.BareError) pass through unchanged.
+//
+// executeWithOptions calls this immediately after rootCmd.Execute() and
+// before emitting the Shutdown lifecycle event, so a plugin's Shutdown
+// handler observes the same classification handleRootError writes to
+// stderr.
+func normalizeRootError(err error, stage errorStage) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := errs.ProblemOf(err); ok {
+		return err
+	}
+	var pfErr *output.PartialFailureError
+	if errors.As(err, &pfErr) {
+		return err
+	}
+	var bareErr *output.BareError
+	if errors.As(err, &bareErr) {
+		return err
+	}
+	return rebuildTypedError(err, stage)
 }
 
-// isCobraUsageError reports whether err is a cobra / pflag usage mistake,
-// identified by the stable error text of the pinned cobra version.
-func isCobraUsageError(err error) bool {
-	msg := err.Error()
-	for _, m := range cobraUsageErrorMarkers {
-		if strings.Contains(msg, m) {
-			return true
-		}
+// rebuildTypedError always constructs a new typed error for err, choosing the
+// category from the dispatch stage. Unlike normalizeRootError it does not pass
+// an already-typed value through, which is what the envelope-write fallback
+// needs: the value it holds has just proven it cannot serialize itself.
+func rebuildTypedError(err error, stage errorStage) error {
+	if stage == stageUserInput {
+		return errs.NewValidationError(errs.SubtypeInvalidArgument, "%s", err.Error()).
+			WithCause(err)
 	}
-	return false
+	return errs.NewInternalError(errs.SubtypeUnknown, "%s", err.Error()).WithCause(err)
 }
 
 // installUnknownSubcommandGuard replaces cobra's silent help fallback on

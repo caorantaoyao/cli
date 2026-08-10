@@ -1227,15 +1227,18 @@ func handleShortcutDryRun(f *cmdutil.Factory, rctx *RuntimeContext, s *Shortcut)
 }
 
 // rejectPositionalArgs returns a cobra.PositionalArgs that rejects any
-// positional arguments. It returns a plain cobra usage error; the root
-// handler classifies it into the typed validation envelope (exit 2), the
-// same path as other cobra usage failures.
+// positional arguments. Shortcuts take every value through a flag, so a bare
+// word on the command line is always a mistake; the error is typed here at
+// the point of rejection and names the first stray word.
 func rejectPositionalArgs() cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return nil
 		}
-		return fmt.Errorf("positional arguments are not supported (got %q); pass values via flags", args)
+		return errs.NewValidationError(errs.SubtypeInvalidArgument,
+			"positional arguments are not supported (got %q); pass values via flags", args).
+			WithHint(fmt.Sprintf("run `%s --help` to see the flags this command accepts", cmd.CommandPath())).
+			WithParam(args[0])
 	}
 }
 

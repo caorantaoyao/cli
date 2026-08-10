@@ -165,7 +165,7 @@ func TestHandleRootError_SecurityPolicyCanonicalEnvelope(t *testing.T) {
 			ChallengeURL: "https://example.com/challenge",
 		}
 
-		gotExit := handleRootError(f, spErr, nil)
+		gotExit := handleRootError(f, spErr, nil, stageCommandBody)
 		if gotExit != int(output.ExitContentSafety) {
 			t.Errorf("exit code = %d, want %d (ExitContentSafety)", gotExit, output.ExitContentSafety)
 		}
@@ -212,7 +212,7 @@ func TestHandleRootError_SecurityPolicyCanonicalEnvelope(t *testing.T) {
 			},
 		}
 
-		gotExit := handleRootError(f, spErr, nil)
+		gotExit := handleRootError(f, spErr, nil, stageCommandBody)
 		if gotExit != int(output.ExitContentSafety) {
 			t.Errorf("exit code = %d, want %d", gotExit, output.ExitContentSafety)
 		}
@@ -289,7 +289,7 @@ func TestHandleRootError_DeprecatedAliasMissingFlagStructured(t *testing.T) {
 	})
 	// The bare error shape cobra's ValidateRequiredFlags produces: not a typed
 	// errs.* error, so it reaches the deprecation fallback.
-	exit := handleRootError(f, fmt.Errorf(`required flag(s) %q not set`, "values"), nil)
+	exit := handleRootError(f, fmt.Errorf(`required flag(s) %q not set`, "values"), nil, stageUserInput)
 
 	out := errOut.String()
 	if strings.HasPrefix(strings.TrimSpace(out), "Error:") {
@@ -317,7 +317,7 @@ func TestHandleRootError_AuthConfigWireGolden(t *testing.T) {
 		errOut := &bytes.Buffer{}
 		f.IOStreams.ErrOut = errOut
 
-		exit := handleRootError(f, internalauth.NewNeedUserAuthorizationError("u_golden"), nil)
+		exit := handleRootError(f, internalauth.NewNeedUserAuthorizationError("u_golden"), nil, stageCommandBody)
 		if exit != int(output.ExitAuth) {
 			t.Errorf("exit = %d, want %d (ExitAuth)", exit, int(output.ExitAuth))
 		}
@@ -348,7 +348,7 @@ func TestHandleRootError_AuthConfigWireGolden(t *testing.T) {
 		errOut := &bytes.Buffer{}
 		f.IOStreams.ErrOut = errOut
 
-		exit := handleRootError(f, core.NotConfiguredError(), nil)
+		exit := handleRootError(f, core.NotConfiguredError(), nil, stageCommandBody)
 		if exit != int(output.ExitAuth) {
 			t.Errorf("exit = %d, want %d (config shares ExitAuth)", exit, int(output.ExitAuth))
 		}
@@ -396,7 +396,7 @@ func TestHandleRootError_NoDeprecationTypesUsageError(t *testing.T) {
 	errOut := &bytes.Buffer{}
 	f.IOStreams.ErrOut = errOut
 
-	exit := handleRootError(f, fmt.Errorf(`required flag(s) %q not set`, "values"), nil)
+	exit := handleRootError(f, fmt.Errorf(`required flag(s) %q not set`, "values"), nil, stageUserInput)
 
 	out := errOut.String()
 	if strings.HasPrefix(strings.TrimSpace(out), "Error:") {
@@ -427,7 +427,7 @@ func TestHandleRootError_LeakedUntypedErrorBecomesInternal(t *testing.T) {
 	errOut := &bytes.Buffer{}
 	f.IOStreams.ErrOut = errOut
 
-	exit := handleRootError(f, fmt.Errorf("upstream helper exploded: %w", io.ErrUnexpectedEOF), nil)
+	exit := handleRootError(f, fmt.Errorf("upstream helper exploded: %w", io.ErrUnexpectedEOF), nil, stageCommandBody)
 
 	errObj := decodeErrorEnvelope(t, errOut.Bytes())
 	if got := errObj["type"]; got != "internal" {
@@ -452,7 +452,7 @@ func TestHandleRootError_PartialWritePreservesExitCode(t *testing.T) {
 	f.IOStreams.ErrOut = w
 
 	err := errs.NewAuthenticationError(errs.SubtypeTokenExpired, "token expired")
-	exit := handleRootError(f, err, nil)
+	exit := handleRootError(f, err, nil, stageCommandBody)
 	if exit != int(output.ExitAuth) {
 		t.Errorf("exit = %d, want %d (typed exit code preserved despite write failure)", exit, int(output.ExitAuth))
 	}
@@ -469,7 +469,7 @@ func TestHandleRootError_BareErrorExitCodeNoStderr(t *testing.T) {
 	errOut := &bytes.Buffer{}
 	f.IOStreams.ErrOut = errOut
 
-	exit := handleRootError(f, output.ErrBare(output.ExitAuth), nil)
+	exit := handleRootError(f, output.ErrBare(output.ExitAuth), nil, stageCommandBody)
 	if exit != int(output.ExitAuth) {
 		t.Errorf("exit = %d, want %d (BareError code propagated)", exit, int(output.ExitAuth))
 	}
@@ -495,7 +495,7 @@ func TestHandleRootError_TypedAuthErrorWithLegacyCausePreserved(t *testing.T) {
 		WithHint("custom producer hint").
 		WithCause(innerLegacy)
 
-	exit := handleRootError(f, outer, nil)
+	exit := handleRootError(f, outer, nil, stageCommandBody)
 	if exit != int(output.ExitAuth) {
 		t.Errorf("exit = %d, want %d (ExitAuth)", exit, int(output.ExitAuth))
 	}
@@ -711,4 +711,67 @@ func TestApplyNeedAuthorizationHint_AppendsExistingHint(t *testing.T) {
 	if authErr.Hint != "existing hint" {
 		t.Errorf("presenter mutated producer hint: %q", authErr.Hint)
 	}
+}
+
+// TestNormalizeRootError pins the classification executeWithOptions applies
+// (via normalizeRootError) immediately after rootCmd.Execute(), before the
+// Shutdown lifecycle hook fires: a residual cobra usage error becomes a
+// typed validation error, any other untyped error becomes a typed internal
+// error preserving the original as Cause, and already-typed errors / the two
+// exit-code-only signals pass through unchanged. Without this, a plugin's
+// Shutdown handler would observe an untyped cobra error that disagrees with
+// the Category/Subtype the stderr envelope ultimately carries.
+func TestNormalizeRootError(t *testing.T) {
+	t.Run("nil", func(t *testing.T) {
+		if got := normalizeRootError(nil, stageUserInput); got != nil {
+			t.Errorf("normalizeRootError(nil, stageUserInput) = %v, want nil", got)
+		}
+	})
+
+	t.Run("already typed passes through unchanged", func(t *testing.T) {
+		typed := errs.NewPermissionError(errs.SubtypePermissionDenied, "denied")
+		if got := normalizeRootError(typed, stageCommandBody); got != error(typed) {
+			t.Errorf("normalizeRootError(typed, stageCommandBody) = %v, want the same typed error unchanged", got)
+		}
+	})
+
+	t.Run("PartialFailureError passes through unchanged", func(t *testing.T) {
+		pfErr := &output.PartialFailureError{Code: 1}
+		if got := normalizeRootError(pfErr, stageCommandBody); got != error(pfErr) {
+			t.Errorf("normalizeRootError(PartialFailureError) = %v, want the same signal unchanged", got)
+		}
+	})
+
+	t.Run("BareError passes through unchanged", func(t *testing.T) {
+		bareErr := output.ErrBare(output.ExitAuth)
+		if got := normalizeRootError(bareErr, stageCommandBody); got != error(bareErr) {
+			t.Errorf("normalizeRootError(BareError) = %v, want the same signal unchanged", got)
+		}
+	})
+
+	t.Run("cobra usage error becomes typed validation", func(t *testing.T) {
+		got := normalizeRootError(fmt.Errorf(`required flag(s) %q not set`, "csv"), stageUserInput)
+		var ve *errs.ValidationError
+		if !errors.As(got, &ve) {
+			t.Fatalf("normalizeRootError(cobra usage error) = %v, want *errs.ValidationError", got)
+		}
+		if ve.Subtype != errs.SubtypeInvalidArgument {
+			t.Errorf("Subtype = %q, want %q", ve.Subtype, errs.SubtypeInvalidArgument)
+		}
+	})
+
+	t.Run("other untyped error becomes typed internal, preserving cause", func(t *testing.T) {
+		original := fmt.Errorf("upstream helper exploded: %w", io.ErrUnexpectedEOF)
+		got := normalizeRootError(original, stageCommandBody)
+		var ie *errs.InternalError
+		if !errors.As(got, &ie) {
+			t.Fatalf("normalizeRootError(untyped error) = %v, want *errs.InternalError", got)
+		}
+		if ie.Subtype != errs.SubtypeUnknown {
+			t.Errorf("Subtype = %q, want %q", ie.Subtype, errs.SubtypeUnknown)
+		}
+		if !errors.Is(got, io.ErrUnexpectedEOF) {
+			t.Error("normalizeRootError(untyped error) lost the original cause")
+		}
+	})
 }

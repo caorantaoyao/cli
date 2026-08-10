@@ -57,9 +57,10 @@ func buildIntegrationRootCmd(t *testing.T, f *cmdutil.Factory) *cobra.Command {
 // handleRootError, returning the exit code matching real CLI behavior.
 func executeRootIntegration(t *testing.T, f *cmdutil.Factory, rootCmd *cobra.Command, args []string) int {
 	t.Helper()
+	instrumentErrorStages(rootCmd)
 	rootCmd.SetArgs(args)
 	if err := rootCmd.Execute(); err != nil {
-		return handleRootError(f, err, nil)
+		return handleRootError(f, err, nil, currentErrorStage())
 	}
 	return 0
 }

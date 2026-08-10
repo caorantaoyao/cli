@@ -5,10 +5,13 @@ package hook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/larksuite/cli/extension/platform"
+	"github.com/larksuite/cli/internal/output"
+	"github.com/larksuite/cli/internal/recovery"
 )
 
 // shutdownDeadline is the hard upper bound on how long Shutdown
@@ -68,24 +71,55 @@ func Emit(ctx context.Context, reg *Registry, event platform.LifecycleEvent, las
 	if len(handlers) == 0 {
 		return nil
 	}
-	lc := &platform.LifecycleContext{Event: event, Err: lastErr}
-
 	if event == platform.Shutdown {
-		return emitShutdown(ctx, handlers, lc)
+		return emitShutdown(ctx, handlers, event, lastErr)
 	}
 	for _, h := range handlers {
-		if err := callLifecycleSafe(ctx, h, lc); err != nil {
+		if err := callLifecycleSafe(ctx, h, newLifecycleContext(event, lastErr)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// newLifecycleContext builds one handler's own context. Typed error fields are
+// exported, so handing every handler the same value would let the first one
+// observing a failure change what the rest of them see. Each handler therefore
+// gets its own context, and its own copy of the error wherever the value can be
+// copied.
+func newLifecycleContext(event platform.LifecycleEvent, lastErr error) *platform.LifecycleContext {
+	return &platform.LifecycleContext{Event: event, Err: copyLifecycleErr(lastErr)}
+}
+
+// copyLifecycleErr returns an independent value for the error shapes this
+// module owns. An error type defined outside them cannot be copied without
+// reflecting over fields we do not know, so it is passed through as-is —
+// LifecycleContext documents that limit.
+func copyLifecycleErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if clone, ok := recovery.CloneTyped(err); ok {
+		return clone
+	}
+	var bare *output.BareError
+	if errors.As(err, &bare) && bare != nil {
+		clone := *bare
+		return &clone
+	}
+	var partial *output.PartialFailureError
+	if errors.As(err, &partial) && partial != nil {
+		clone := *partial
+		return &clone
+	}
+	return err
+}
+
 // emitShutdown enforces the 2-second total deadline. Handlers receive
 // a derived context with the remaining budget; once the budget is
 // exhausted, the remaining handlers are skipped (with a stderr
 // warning) and Emit returns.
-func emitShutdown(parent context.Context, handlers []LifecycleEntry, lc *platform.LifecycleContext) error {
+func emitShutdown(parent context.Context, handlers []LifecycleEntry, event platform.LifecycleEvent, lastErr error) error {
 	ctx, cancel := context.WithTimeout(parent, shutdownDeadline)
 	defer cancel()
 	deadline := time.Now().Add(shutdownDeadline)
@@ -95,7 +129,7 @@ func emitShutdown(parent context.Context, handlers []LifecycleEntry, lc *platfor
 			fmt.Fprintf(stderr(), "warning: shutdown deadline exceeded; skipping hook %q\n", h.Name)
 			continue
 		}
-		if err := callLifecycleSafe(ctx, h, lc); err != nil {
+		if err := callLifecycleSafe(ctx, h, newLifecycleContext(event, lastErr)); err != nil {
 			// Shutdown errors are logged, not propagated -- exit is
 			// non-recoverable anyway.
 			fmt.Fprintf(stderr(), "warning: shutdown hook %q: %v\n", h.Name, err)

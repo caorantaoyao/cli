@@ -371,6 +371,14 @@ func buildInternalWithConfig(ctx context.Context, inv cmdutil.InvocationContext,
 	if hookRegistry != nil {
 		installHooks(rootCmd, hookRegistry)
 	}
+
+	// Wrap Args validators and mark command-body entry after plugin hooks are
+	// in place, so the mark sits outside the wrapper chain. The chain is part
+	// of executing the command, so a wrapper that fails before delegating is
+	// our problem, not a mistake in what the user typed. Policy denials are
+	// unaffected either way: they carry a typed error and never reach the
+	// stage judgement.
+	instrumentErrorStages(rootCmd)
 	if hasConcealedCommands {
 		installHelpCommand(rootCmd)
 	}

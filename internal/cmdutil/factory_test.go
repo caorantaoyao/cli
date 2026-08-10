@@ -514,6 +514,33 @@ func TestRequireBuiltinCredentialProvider_NilCredential(t *testing.T) {
 	}
 }
 
+// A provider that already classified its own failure must keep that
+// classification. Rewrapping it would replace, for example, a retryable
+// network timeout with an internal fault and change the exit code with it.
+func TestRequireBuiltinCredentialProvider_KeepsProviderClassification(t *testing.T) {
+	typed := errs.NewNetworkError(errs.SubtypeNetworkTimeout, "provider lookup timed out")
+	stub := &stubExtProvider{name: "env", err: typed}
+	cred := credential.NewCredentialProvider([]extcred.Provider{stub}, nil, nil, nil)
+
+	f, _, _, _ := TestFactory(t, nil)
+	f.Credential = cred
+
+	err := f.RequireBuiltinCredentialProvider(context.Background(), "auth")
+
+	problem, ok := errs.ProblemOf(err)
+	if !ok {
+		t.Fatalf("error %T carries no Problem", err)
+	}
+	if problem.Category != errs.CategoryNetwork || problem.Subtype != errs.SubtypeNetworkTimeout {
+		t.Errorf("classified as %s/%s, want %s/%s (the provider's own classification)",
+			problem.Category, problem.Subtype, errs.CategoryNetwork, errs.SubtypeNetworkTimeout)
+	}
+	var netErr *errs.NetworkError
+	if !errors.As(err, &netErr) {
+		t.Errorf("error = %T, want the provider's *errs.NetworkError preserved", err)
+	}
+}
+
 func TestRequireBuiltinCredentialProvider_PropagatesProviderError(t *testing.T) {
 	sentinel := errors.New("provider unavailable")
 	stub := &stubExtProvider{name: "env", err: sentinel}
