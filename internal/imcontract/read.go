@@ -82,10 +82,17 @@ func (s *ReadSession) ObserveOutputPagination(meta *output.PaginationMeta, start
 		return nil
 	}
 	if meta == nil || meta.Pages < 1 {
+		// Name the offending contract and keep the diagnosis local: the server
+		// answered fine, the command just never handed its pagination facts to
+		// the contract. Blaming the response here used to send agents off to a
+		// different command instead of surfacing the wiring bug. Only
+		// compile-time metadata may be interpolated — never a server-supplied
+		// cursor or response body.
 		return errs.NewInternalError(
 			errs.SubtypeInvalidResponse,
-			"IM collection read completed without valid pagination metadata",
-		)
+			"%s is registered as a paginated IM read but produced no pagination facts",
+			s.contract.Key,
+		).WithHint("the command's contract registration or its pagination metadata wiring is wrong; report this command")
 	}
 	status := client.PaginationStatus{
 		PagesFetched:  meta.Pages,

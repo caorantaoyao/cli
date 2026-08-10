@@ -4,8 +4,10 @@
 package imcontract
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/output"
 )
 
@@ -90,5 +92,59 @@ func TestPagingReadContractsStillRejectAbsentPagination(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no paginating read contracts found; the assertion would be vacuous")
+	}
+}
+
+// TestPagingReadGuardMessageIsDiagnosable pins the fail-closed error to a local
+// contract diagnosis: it must not blame the server response, must offer a single
+// action, and must name the offending contract.
+func TestPagingReadGuardMessageIsDiagnosable(t *testing.T) {
+	var contract Contract
+	for _, c := range All() {
+		if !c.Strategy.Kind.IsRead() {
+			continue
+		}
+		session, err := NewReadSession(c, ReadOptions{})
+		if err != nil {
+			t.Fatalf("NewReadSession(%s) error = %v", c.Key, err)
+		}
+		if session.RequiresPagination() {
+			contract = c
+			break
+		}
+	}
+	if contract.Key == "" {
+		t.Fatal("no paginating read contract found")
+	}
+	session, err := NewReadSession(contract, ReadOptions{})
+	if err != nil {
+		t.Fatalf("NewReadSession() error = %v", err)
+	}
+	err = session.ObserveOutputPagination(nil, false)
+	if err == nil {
+		t.Fatal("ObserveOutputPagination(nil) = nil, want error")
+	}
+	problem, ok := errs.ProblemOf(err)
+	if !ok {
+		t.Fatalf("error is not typed: %v", err)
+	}
+	if problem.Hint == "" {
+		t.Fatal("fail-closed error has no hint; the reader gets no recoverable action")
+	}
+	text := strings.ToLower(problem.Message + " " + problem.Hint)
+	for _, blamed := range []string{"invalid pagination metadata", "invalid response"} {
+		if strings.Contains(text, blamed) {
+			t.Errorf("message blames the response (%q); it is a local contract invariant: %q", blamed, text)
+		}
+	}
+	// The hint must offer exactly one action. Suggesting a different command or a
+	// looser path is what pushed agents off the fail-closed semantics before.
+	for _, misdirect := range []string{"retry", "instead use", "fall back", "--page"} {
+		if strings.Contains(strings.ToLower(problem.Hint), misdirect) {
+			t.Errorf("hint misdirects the reader with %q: %q", misdirect, problem.Hint)
+		}
+	}
+	if !strings.Contains(problem.Message, string(contract.Key)) {
+		t.Errorf("message does not name the offending contract %q: %q", contract.Key, problem.Message)
 	}
 }
