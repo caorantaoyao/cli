@@ -74,6 +74,13 @@ func (s *ReadSession) ObserveOutputPagination(meta *output.PaginationMeta, start
 	if s.observed {
 		return nil
 	}
+	// Entity and materialize reads answer by ID or fetch a single resource, so
+	// they have no pagination fact to observe. Treating their absent metadata
+	// as an invalid response would reject a correct result, so the session
+	// declines the observation instead of demanding one.
+	if !s.RequiresPagination() {
+		return nil
+	}
 	if meta == nil || meta.Pages < 1 {
 		return errs.NewInternalError(
 			errs.SubtypeInvalidResponse,

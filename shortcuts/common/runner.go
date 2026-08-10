@@ -894,13 +894,21 @@ func (ctx *RuntimeContext) emitFinalized(
 		resultExit = result.ExitCode
 	}
 	if ctx.readSession != nil {
-		var pagination *output.PaginationMeta
-		if meta != nil {
-			pagination = meta.Pagination
-		}
-		if err := ctx.readSession.ObserveOutputPagination(pagination, ctx.paginationStartedFromToken()); err != nil {
-			ctx.outputErrOnce.Do(func() { ctx.outputErr = err })
-			return
+		// Only paginated read contracts carry pagination facts. Entity and
+		// materialize reads answer by ID or fetch a single resource, so they
+		// legitimately emit no pagination metadata — demanding it from them
+		// rejects a correct response and drops the whole envelope. The
+		// generated service path gates the same observation on the contract
+		// kind before finalizing.
+		if ctx.readSession.RequiresPagination() {
+			var pagination *output.PaginationMeta
+			if meta != nil {
+				pagination = meta.Pagination
+			}
+			if err := ctx.readSession.ObserveOutputPagination(pagination, ctx.paginationStartedFromToken()); err != nil {
+				ctx.outputErrOnce.Do(func() { ctx.outputErr = err })
+				return
+			}
 		}
 		result, err := ctx.readSession.Finalize(data)
 		if err != nil {
