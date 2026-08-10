@@ -148,3 +148,41 @@ func TestPagingReadGuardMessageIsDiagnosable(t *testing.T) {
 		t.Errorf("message does not name the offending contract %q: %q", contract.Key, problem.Message)
 	}
 }
+
+// TestPagingReadGuardNeverEchoesServerCursor covers the branch the other guard
+// test cannot reach: a non-nil meta whose Pages is still short. That is the only
+// shape where a server-supplied cursor is readable at the failure point, so it
+// is the only shape that can leak one. Static-only diagnosis is a security
+// guardrail, not a style preference.
+func TestPagingReadGuardNeverEchoesServerCursor(t *testing.T) {
+	const sentinel = "SENTINEL_CURSOR_DO_NOT_LEAK"
+	checked := 0
+	for _, contract := range All() {
+		if !contract.Strategy.Kind.IsRead() {
+			continue
+		}
+		session, err := NewReadSession(contract, ReadOptions{})
+		if err != nil {
+			t.Fatalf("NewReadSession(%s) error = %v", contract.Key, err)
+		}
+		if !session.RequiresPagination() {
+			continue
+		}
+		checked++
+		err = session.ObserveOutputPagination(&output.PaginationMeta{Pages: 0, NextToken: sentinel}, false)
+		if err == nil {
+			t.Fatalf("%s: ObserveOutputPagination(Pages=0) = nil, want error", contract.Key)
+		}
+		problem, ok := errs.ProblemOf(err)
+		if !ok {
+			t.Fatalf("%s: error is not typed: %v", contract.Key, err)
+		}
+		if strings.Contains(problem.Message, sentinel) || strings.Contains(problem.Hint, sentinel) {
+			t.Errorf("%s: fail-closed text echoes a server-supplied cursor: msg=%q hint=%q",
+				contract.Key, problem.Message, problem.Hint)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no paginating read contracts found; the assertion would be vacuous")
+	}
+}
