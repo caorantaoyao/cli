@@ -127,6 +127,7 @@ lark-cli wiki +node-create \
   - 同时需要 `my_library` 和父节点时：会展示三步调用链
 - **bot 自动授权**：若使用 `--as bot`，结果还会额外带上 `permission_grant`，用于说明是否已自动为当前 CLI 用户授予新建节点的可管理权限
 - **输出结果**：成功后会返回 `resolved_space_id`、`resolved_by`、`node_token`、`obj_token`、`obj_type`、`node_type`、`title` 等字段，便于后续继续操作
+- **单层节点上限**：返回 `131003` 表示目标层级的直接子节点数已达上限。这是结构性资源限制，不是瞬时错误；禁止使用相同目标重试。改用其他父节点，或先创建中间节点并分层组织内容。
 
 ## 推荐场景
 

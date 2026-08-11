@@ -35,6 +35,12 @@ const (
 	// wikiNodeCreateRetryBaseDelay is the initial backoff delay for lock
 	// contention retries. Subsequent retries double the delay (250ms, 500ms).
 	wikiNodeCreateRetryBaseDelay = 250 * time.Millisecond
+
+	// 131003 is command-specific here: node creation uses it when the target
+	// level has reached its direct-child limit. Other wiki commands reuse the
+	// same public code for different limits, so do not classify it globally.
+	wikiNodeCreateLayerLimitCode = 131003
+	wikiNodeCreateLayerLimitHint = "The target Wiki level has reached its maximum number of direct child nodes. This is a structural resource limit, not a transient failure. Do not retry with the same target; choose a different parent or organize new nodes under an intermediate parent."
 )
 
 var wikiObjectTypes = []string{
@@ -341,7 +347,7 @@ func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identit
 			break
 		}
 		if !isWikiNodeLockContention(lastErr) {
-			return nil, lastErr
+			return nil, withWikiNodeCreateRecoveryHint(lastErr)
 		}
 	}
 	if lastErr != nil {
@@ -355,6 +361,20 @@ func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identit
 		Node:          node,
 		ResolvedSpace: resolvedSpace,
 	}, nil
+}
+
+func withWikiNodeCreateRecoveryHint(err error) error {
+	p, ok := errs.ProblemOf(err)
+	if !ok || p.Code != wikiNodeCreateLayerLimitCode {
+		return err
+	}
+	p.Retryable = false
+	if existing := strings.TrimSpace(p.Hint); existing != "" {
+		p.Hint = existing + "\n" + wikiNodeCreateLayerLimitHint
+	} else {
+		p.Hint = wikiNodeCreateLayerLimitHint
+	}
+	return err
 }
 
 // isWikiNodeLockContention returns true if the error is a Lark API error with
